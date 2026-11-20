@@ -1,0 +1,1840 @@
+desc:GEN-16 Drum Machine [5am] - 16-pad sampler + 32-step swing sequencer
+//author: 5am _GEN_
+//tags: instrument sampler drum sequencer MPC
+version: 3.0
+// ---------------------------------------------------------------------------
+//  GEN-16  -  rebuilt from the "Drum Trigger 8x2" prototype.
+//  * 32-voice polyphonic engine (poly / mono, choke groups, voice stealing)
+//  * per pad: tune+fine, start/end trim, reverse, normalize, AHD envelope,
+//    velocity->amp, SVF filter (LP/HP/BP) with velocity->cutoff, drive,
+//    level, pan, 8 stereo output buses
+//  * 8 patterns x 16 rows x up to 32 steps, per-row length (polymeter),
+//    per-step velocity / probability / ratchet, MPC swing, 5 step rates,
+//    quantised live recording, note repeat, Euclid generator, MIDI out
+//  * resizable, HiDPI-aware UI: PADS / SEQ / MIXER views
+//  * drag & drop (multi-file), plus 5am_GEN16_Send.lua bridge for arrange items
+// ---------------------------------------------------------------------------
+
+options:maxmem=33554432 gfx_hz=60
+
+in_pin:Input L
+in_pin:Input R
+out_pin:Main L
+out_pin:Main R
+out_pin:Out 3/4 L
+out_pin:Out 3/4 R
+out_pin:Out 5/6 L
+out_pin:Out 5/6 R
+out_pin:Out 7/8 L
+out_pin:Out 7/8 R
+out_pin:Out 9/10 L
+out_pin:Out 9/10 R
+out_pin:Out 11/12 L
+out_pin:Out 11/12 R
+out_pin:Out 13/14 L
+out_pin:Out 13/14 R
+out_pin:Out 15/16 L
+out_pin:Out 15/16 R
+
+slider1:0<-60,12,0.1>-Master Level (dB)
+slider2:50<50,75,1>-Swing (%)
+slider3:0<0,7,1{A,B,C,D,E,F,G,H}>-Pattern
+slider4:2<0,4,1{1/8,1/8T,1/16,1/16T,1/32}>-Step Rate
+slider5:0<0,1,1{Off,On}>-Pad 01 Mute
+slider6:0<0,1,1{Off,On}>-Pad 02 Mute
+slider7:0<0,1,1{Off,On}>-Pad 03 Mute
+slider8:0<0,1,1{Off,On}>-Pad 04 Mute
+slider9:0<0,1,1{Off,On}>-Pad 05 Mute
+slider10:0<0,1,1{Off,On}>-Pad 06 Mute
+slider11:0<0,1,1{Off,On}>-Pad 07 Mute
+slider12:0<0,1,1{Off,On}>-Pad 08 Mute
+slider13:0<0,1,1{Off,On}>-Pad 09 Mute
+slider14:0<0,1,1{Off,On}>-Pad 10 Mute
+slider15:0<0,1,1{Off,On}>-Pad 11 Mute
+slider16:0<0,1,1{Off,On}>-Pad 12 Mute
+slider17:0<0,1,1{Off,On}>-Pad 13 Mute
+slider18:0<0,1,1{Off,On}>-Pad 14 Mute
+slider19:0<0,1,1{Off,On}>-Pad 15 Mute
+slider20:0<0,1,1{Off,On}>-Pad 16 Mute
+slider21:0<-60,12,0.1>-Pad 01 Level (dB)
+slider22:0<-60,12,0.1>-Pad 02 Level (dB)
+slider23:0<-60,12,0.1>-Pad 03 Level (dB)
+slider24:0<-60,12,0.1>-Pad 04 Level (dB)
+slider25:0<-60,12,0.1>-Pad 05 Level (dB)
+slider26:0<-60,12,0.1>-Pad 06 Level (dB)
+slider27:0<-60,12,0.1>-Pad 07 Level (dB)
+slider28:0<-60,12,0.1>-Pad 08 Level (dB)
+slider29:0<-60,12,0.1>-Pad 09 Level (dB)
+slider30:0<-60,12,0.1>-Pad 10 Level (dB)
+slider31:0<-60,12,0.1>-Pad 11 Level (dB)
+slider32:0<-60,12,0.1>-Pad 12 Level (dB)
+slider33:0<-60,12,0.1>-Pad 13 Level (dB)
+slider34:0<-60,12,0.1>-Pad 14 Level (dB)
+slider35:0<-60,12,0.1>-Pad 15 Level (dB)
+slider36:0<-60,12,0.1>-Pad 16 Level (dB)
+
+@init
+ext_noinit = 1;
+gfx_ext_retina = 1;
+
+// ============================== CONSTANTS ===================================
+NV = 32; NK = 24; TB = 48;
+K_NOTE = 0;  K_TUNE = 1;  K_FINE = 2;   K_START = 3; K_END = 4;   K_ATT = 5;
+K_HOLD = 6;  K_DEC = 7;   K_GAIN = 8;   K_PAN = 9;   K_VSENS = 10; K_FTYPE = 11;
+K_CUT = 12;  K_RES = 13;  K_VCUT = 14;  K_DRIVE = 15; K_CHOKE = 16; K_OUT = 17;
+K_MODE = 18; K_REV = 19;  K_MUTE = 20;  K_SOLO = 21; K_COLOR = 22; K_NORM = 23;
+
+// ============================== MEMORY MAP ==================================
+PB = 1000;                                     // pad params [k*16 + pad]
+MB_MIN = 1600; MB_MAX = 1632; MB_DEF = 1664; MB_CRV = 1696; MB_INT = 1728; MB_BIP = 1760;
+LOADED = 1800; LEN = 1816; NCH = 1832; SRR = 1848; NORMG = 1864; PK = 1880; FLASH = 1896;
+HELD = 1912; HELDV = 1928; CURST = 1944; RSKIP = 1960; RT_N = 1976; RT_INT = 1992;
+RT_CTR = 2008; RT_V = 2024; MO_CTR = 2040; MO_NOTE = 2056; PKH = 2072;
+D_INC = 2100; D_S0 = 2116; D_S1 = 2132; D_PLEN = 2148; D_AINC = 2164; D_HOLDS = 2180;
+D_DCO = 2196; D_GL = 2212; D_GR = 2228; D_FT = 2244; D_OUT = 2260; D_DPRE = 2276; D_DCMP = 2292;
+VA = 2400; VP = 2432; VPOS = 2464; VENV = 2496; VST = 2528; VT = 2560; VVG = 2592; VVEL = 2624;
+VAGE = 2656; VA1 = 2688; VA2 = 2720; VA3 = 2752; VK = 2784; VI1L = 2816; VI2L = 2848; VI1R = 2880; VI2R = 2912;
+MQ = 3000;          // MIDI event queue (64 x 3)
+UQ = 3300;          // UI trigger ring (64 x 2)
+PAL = 3500;         // 12 pad colours
+RATE_TAB = 3520;
+CLIP_ROW = 3600;    // 97
+CLIP_PAD = 3800;    // 24
+THUMB = 4000;       // 16 x 48
+SVEL = 8192; SPROB = 12288; SRAT = 16384;   // 8 pat x 16 rows x 32 steps
+RL = 20480;         // row lengths 8 x 16
+CLIP_PAT = 21000;   // 1552
+BUF_BASE = 262144; SLOT = 2080000;          // ~23 s stereo @ 44.1k per pad
+
+RATE_TAB[0] = 2; RATE_TAB[1] = 3; RATE_TAB[2] = 4; RATE_TAB[3] = 6; RATE_TAB[4] = 8;
+
+// ============================== THEME =======================================
+C_BG = 0x0E1014; C_PANEL = 0x171A20; C_PANEL2 = 0x1E222A; C_LINE = 0x2A2F39;
+C_BTN = 0x262B34; C_BTNH = 0x323946; C_TXT = 0xE8EAEE; C_TXT2 = 0x8C95A4; C_TXT3 = 0x586070;
+C_ACC = 0xFF8A3D; C_ACC2 = 0x2EC4B6; C_RED = 0xFF4D5E; C_GRN = 0x3DDC97; C_YEL = 0xFFD84A;
+C_TRACK = 0x2A2F39; C_KNOB = 0x2C313B; C_KNOBH = 0x3A4150; C_WAVEBG = 0x0A0C10; C_WAVEDIM = 0x3A404C;
+C_PAD = 0x20242C; C_ROWSEL = 0x232833; C_STEP1 = 0x252A33; C_STEP2 = 0x2C323D; C_OFFLEN = 0x15181D;
+
+PAL[0] = 0xFF6B4A; PAL[1] = 0xFFA53D; PAL[2] = 0xFFD84A; PAL[3] = 0x9BE15D;
+PAL[4] = 0x3DDC97; PAL[5] = 0x2EC4B6; PAL[6] = 0x3FA7FF; PAL[7] = 0x6C7BFF;
+PAL[8] = 0xA66BFF; PAL[9] = 0xF062C0; PAL[10] = 0xC9CED6; PAL[11] = 0xE85D75;
+
+// ============================== GENERIC HELPERS =============================
+function clampv(v, a, b) ( v < a ? a : (v > b ? b : v); );
+
+function sat(x) ( x = clampv(x, -3, 3); x * (27 + x*x) / (27 + 9*x*x); );
+
+function softclip(x) local(a, e) (
+  a = abs(x);
+  a <= 0.8 ? x : ( e = a - 0.8; sign(x) * (0.8 + e / (1 + e*5)); );
+);
+
+function cmix(a, b, t) local(r, g, bb) (
+  r  = ((a >> 16) & 255) * (1 - t) + ((b >> 16) & 255) * t;
+  g  = ((a >> 8) & 255) * (1 - t) + ((b >> 8) & 255) * t;
+  bb = (a & 255) * (1 - t) + (b & 255) * t;
+  ((r|0) << 16) | ((g|0) << 8) | (bb|0);
+);
+
+function trimnl(s) local(n, c) (
+  n = strlen(s);
+  while (n > 0 && ((c = str_getchar(s, n - 1)) == 10 || c == 13 || c == 32 || c == 9)) ( n -= 1; );
+  str_setlen(s, n);
+  s;
+);
+
+function parse_int(s) local(n, i, c, neg, v) (
+  n = strlen(s); v = 0; neg = 0; i = 0;
+  loop(n,
+    c = str_getchar(s, i);
+    c == 45 ? (neg = 1) : ((c >= 48 && c <= 57) ? (v = v*10 + (c - 48)));
+    i += 1;
+  );
+  neg ? -v : v;
+);
+
+function base_name(dst, path) local(n, i, c, s, e) (
+  n = strlen(path); s = 0; e = n; i = 0;
+  loop(n,
+    c = str_getchar(path, i);
+    (c == 47 || c == 92) ? ( s = i + 1; e = n; );
+    c == 46 ? (e = i);
+    i += 1;
+  );
+  e <= s ? (e = n);
+  strcpy_substr(dst, path, s, e - s);
+  dst;
+);
+
+function note_name(n, dst) (
+  n = clampv(n|0, 0, 127);
+  strcpy_substr(dst, "C C#D D#E F F#G G#A A#B ", (n % 12) * 2, 2);
+  str_getchar(dst, 1) == 32 ? str_setlen(dst, 1);
+  sprintf(#nn_tmp, "%d", floor(n / 12) - 1);
+  strcat(dst, #nn_tmp);
+  dst;
+);
+
+function color_name(i, dst) (
+  strcpy(dst, i == 0 ? "Coral" : i == 1 ? "Orange" : i == 2 ? "Yellow" : i == 3 ? "Lime" :
+              i == 4 ? "Mint" : i == 5 ? "Teal" : i == 6 ? "Sky" : i == 7 ? "Indigo" :
+              i == 8 ? "Violet" : i == 9 ? "Pink" : i == 10 ? "Silver" : "Rose");
+);
+
+function rate_name(i, dst) (
+  strcpy(dst, i == 0 ? "1/8" : i == 1 ? "1/8T" : i == 2 ? "1/16" : i == 3 ? "1/16T" : "1/32");
+);
+
+function set_status_t() ( status_t = time_precise(); );
+
+// ============================== PARAMETERS ==================================
+function pmeta(k, mn, mx, df, crv, isint, bip, lbl) (
+  MB_MIN[k] = mn; MB_MAX[k] = mx; MB_DEF[k] = df; MB_CRV[k] = crv; MB_INT[k] = isint; MB_BIP[k] = bip;
+  strcpy(300 + k, lbl);
+);
+//     key        min   max    default curve int bip label
+pmeta(K_NOTE,     0,    127,   36,     0,    1,  0,  "NOTE");
+pmeta(K_TUNE,    -24,   24,    0,      0,    1,  1,  "TUNE");
+pmeta(K_FINE,    -100,  100,   0,      0,    1,  1,  "FINE");
+pmeta(K_START,    0,    1,     0,      0,    0,  0,  "START");
+pmeta(K_END,      0,    1,     1,      0,    0,  0,  "END");
+pmeta(K_ATT,      0,    2000,  0,      2,    0,  0,  "ATTACK");
+pmeta(K_HOLD,     0,    2000,  0,      2,    0,  0,  "HOLD");
+pmeta(K_DEC,      5,    10000, 10000,  2,    0,  0,  "DECAY");
+pmeta(K_GAIN,    -60,   12,    0,      0,    0,  0,  "LEVEL");
+pmeta(K_PAN,     -100,  100,   0,      0,    1,  1,  "PAN");
+pmeta(K_VSENS,    0,    100,   70,     0,    1,  0,  "VEL > AMP");
+pmeta(K_FTYPE,    0,    3,     0,      0,    1,  0,  "FILTER");
+pmeta(K_CUT,      20,   20000, 20000,  1,    0,  0,  "CUTOFF");
+pmeta(K_RES,      0,    100,   0,      0,    1,  0,  "RESO");
+pmeta(K_VCUT,     0,    100,   0,      0,    1,  0,  "VEL > CUT");
+pmeta(K_DRIVE,    0,    100,   0,      0,    1,  0,  "DRIVE");
+pmeta(K_CHOKE,    0,    8,     0,      0,    1,  0,  "CHOKE");
+pmeta(K_OUT,      0,    7,     0,      0,    1,  0,  "OUTPUT");
+pmeta(K_MODE,     0,    1,     0,      0,    1,  0,  "VOICE");
+pmeta(K_REV,      0,    1,     0,      0,    1,  0,  "REVERSE");
+pmeta(K_MUTE,     0,    1,     0,      0,    1,  0,  "MUTE");
+pmeta(K_SOLO,     0,    1,     0,      0,    1,  0,  "SOLO");
+pmeta(K_COLOR,    0,    11,    0,      0,    1,  0,  "COLOR");
+pmeta(K_NORM,     0,    1,     0,      0,    1,  0,  "NORMALIZE");
+
+function pdef(k, p) ( k == K_NOTE ? 36 + p : (k == K_COLOR ? p % 12 : MB_DEF[k]); );
+
+function to_norm(k, v) local(mn, mx, c) (
+  mn = MB_MIN[k]; mx = MB_MAX[k]; c = MB_CRV[k];
+  v = clampv(v, mn, mx);
+  c == 1 ? log(v / mn) / log(mx / mn) : (c == 2 ? ((v - mn) / (mx - mn)) ^ (1/3) : (v - mn) / (mx - mn));
+);
+
+function from_norm(k, n) local(mn, mx, c, v) (
+  mn = MB_MIN[k]; mx = MB_MAX[k]; c = MB_CRV[k];
+  n = clampv(n, 0, 1);
+  v = c == 1 ? mn * (mx / mn) ^ n : (c == 2 ? mn + (mx - mn) * n*n*n : mn + (mx - mn) * n);
+  MB_INT[k] ? (v = floor(v + 0.5));
+  v;
+);
+
+// slider_automate needs a bitmask for sliders 1..31 and the slider variable itself above that
+function notify_slider(i) (
+  i < 32 ? slider_automate(2 ^ (i - 1)) :
+  i == 32 ? slider_automate(slider32) : i == 33 ? slider_automate(slider33) :
+  i == 34 ? slider_automate(slider34) : i == 35 ? slider_automate(slider35) : slider_automate(slider36);
+);
+
+function param_set(k, p, v) (
+  v = clampv(v, MB_MIN[k], MB_MAX[k]);
+  MB_INT[k] ? (v = floor(v + 0.5));
+  k == K_START ? (v = min(v, PB[K_END*16 + p] - 0.002));
+  k == K_END ? (v = max(v, PB[K_START*16 + p] + 0.002));
+  PB[k*16 + p] = v;
+  k == K_GAIN ? ( slider(21 + p) = v; notify_slider(21 + p); );
+  k == K_MUTE ? ( slider(5 + p) = v; notify_slider(5 + p); );
+  v;
+);
+
+function pad_reset(p) local(k) (
+  k = 0;
+  loop(NK, (k != K_NOTE && k != K_COLOR) ? param_set(k, p, pdef(k, p)); k += 1; );
+);
+
+function fmt(k, v, dst) (
+  k == K_NOTE ? ( note_name(v, dst); sprintf(#fmt_t, "  (%d)", v); strcat(dst, #fmt_t); ) :
+  k == K_TUNE ? ( v > 0 ? sprintf(dst, "+%d st", v) : sprintf(dst, "%d st", v); ) :
+  k == K_FINE ? ( v > 0 ? sprintf(dst, "+%d ct", v) : sprintf(dst, "%d ct", v); ) :
+  (k == K_START || k == K_END) ? ( sprintf(dst, "%.1f%%", v * 100); ) :
+  (k == K_ATT || k == K_HOLD) ? ( v < 1000 ? sprintf(dst, "%d ms", v) : sprintf(dst, "%.2f s", v / 1000); ) :
+  k == K_DEC ? ( v >= 9999 ? strcpy(dst, "FULL") : (v < 1000 ? sprintf(dst, "%d ms", v) : sprintf(dst, "%.2f s", v / 1000)); ) :
+  k == K_GAIN ? ( v <= -59.9 ? strcpy(dst, "-inf") : (v > 0 ? sprintf(dst, "+%.1f dB", v) : sprintf(dst, "%.1f dB", v)); ) :
+  k == K_PAN ? ( v == 0 ? strcpy(dst, "C") : (v < 0 ? sprintf(dst, "L%d", -v) : sprintf(dst, "R%d", v)); ) :
+  k == K_FTYPE ? ( strcpy(dst, v == 0 ? "OFF" : v == 1 ? "LP" : v == 2 ? "HP" : "BP"); ) :
+  k == K_CUT ? ( v < 1000 ? sprintf(dst, "%d Hz", v) : sprintf(dst, "%.1f kHz", v / 1000); ) :
+  k == K_CHOKE ? ( v == 0 ? strcpy(dst, "OFF") : sprintf(dst, "GROUP %d", v); ) :
+  k == K_OUT ? ( v == 0 ? strcpy(dst, "MAIN 1/2") : sprintf(dst, "OUT %d/%d", v*2 + 1, v*2 + 2); ) :
+  k == K_MODE ? ( strcpy(dst, v ? "MONO" : "POLY"); ) :
+  k == K_COLOR ? ( color_name(v, dst); ) :
+  (k == K_REV || k == K_MUTE || k == K_SOLO || k == K_NORM) ? ( strcpy(dst, v ? "ON" : "OFF"); ) :
+  ( sprintf(dst, "%d%%", v); );
+  dst;
+);
+
+// ============================== PATTERN DATA ================================
+function row_clear(pat, p) local(b, i) (
+  b = (pat*16 + p) * 32; i = 0;
+  loop(32, SVEL[b + i] = 0; SPROB[b + i] = 100; SRAT[b + i] = 1; i += 1; );
+);
+function pat_clear(pat) local(p) (
+  p = 0; loop(16, row_clear(pat, p); RL[pat*16 + p] = 16; p += 1; );
+);
+function pat_used(pat) local(i, u) (
+  u = 0; i = 0;
+  while (!u && i < 512) ( SVEL[pat*512 + i] > 0 ? (u = 1); i += 1; );
+  u;
+);
+function pat_copy_to(src, dst) (
+  src != dst ? (
+    memcpy(SVEL + dst*512, SVEL + src*512, 512);
+    memcpy(SPROB + dst*512, SPROB + src*512, 512);
+    memcpy(SRAT + dst*512, SRAT + src*512, 512);
+    memcpy(RL + dst*16, RL + src*16, 16);
+  );
+);
+function pat_double(pat) local(p, L, b) (
+  p = 0;
+  loop(16,
+    L = RL[pat*16 + p];
+    L <= 16 ? (
+      b = (pat*16 + p) * 32;
+      memcpy(SVEL + b + L, SVEL + b, L); memcpy(SPROB + b + L, SPROB + b, L); memcpy(SRAT + b + L, SRAT + b, L);
+      RL[pat*16 + p] = L * 2;
+    );
+    p += 1;
+  );
+);
+function row_shift(pat, p, dir) local(L, b, i, tv, tp, tr) (
+  L = RL[pat*16 + p]; b = (pat*16 + p) * 32;
+  L > 1 ? (
+    dir > 0 ? (
+      tv = SVEL[b + L - 1]; tp = SPROB[b + L - 1]; tr = SRAT[b + L - 1];
+      i = L - 1;
+      loop(L - 1, SVEL[b + i] = SVEL[b + i - 1]; SPROB[b + i] = SPROB[b + i - 1]; SRAT[b + i] = SRAT[b + i - 1]; i -= 1; );
+      SVEL[b] = tv; SPROB[b] = tp; SRAT[b] = tr;
+    ) : (
+      tv = SVEL[b]; tp = SPROB[b]; tr = SRAT[b];
+      i = 0;
+      loop(L - 1, SVEL[b + i] = SVEL[b + i + 1]; SPROB[b + i] = SPROB[b + i + 1]; SRAT[b + i] = SRAT[b + i + 1]; i += 1; );
+      SVEL[b + L - 1] = tv; SPROB[b + L - 1] = tp; SRAT[b + L - 1] = tr;
+    );
+  );
+);
+function row_fill(pat, p, every) local(L, b, i) (
+  L = RL[pat*16 + p]; b = (pat*16 + p) * 32; i = 0;
+  loop(L, SVEL[b + i] = (i % every) == 0 ? 100 : 0; SPROB[b + i] = 100; SRAT[b + i] = 1; i += 1; );
+);
+function row_random(pat, p) local(L, b, i, ch) (
+  L = RL[pat*16 + p]; b = (pat*16 + p) * 32; i = 0;
+  loop(L,
+    ch = (i % 4) == 0 ? 55 : ((i % 2) == 0 ? 30 : 18);
+    SVEL[b + i] = rand(100) < ch ? 60 + floor(rand(68)) : 0;
+    SPROB[b + i] = 100; SRAT[b + i] = 1;
+    i += 1;
+  );
+);
+function row_humanize(pat, p) local(L, b, i) (
+  L = RL[pat*16 + p]; b = (pat*16 + p) * 32; i = 0;
+  loop(L, SVEL[b + i] > 0 ? (SVEL[b + i] = clampv(floor(SVEL[b + i] + rand(31) - 15), 1, 127)); i += 1; );
+);
+function row_euclid(pat, p, k, r) local(L, b, i, j) (
+  L = RL[pat*16 + p]; b = (pat*16 + p) * 32; k = min(k, L); i = 0;
+  loop(L,
+    j = (i + r) % L;
+    SVEL[b + i] = ((j * k) % L) < k ? 100 : 0; SPROB[b + i] = 100; SRAT[b + i] = 1;
+    i += 1;
+  );
+);
+function disp_cols() local(p, m) (
+  m = 0; p = 0; loop(16, m = max(m, RL[cur_pat*16 + p]); p += 1; );
+  m > 16 ? 32 : 16;
+);
+
+// ============================== AUDIO ENGINE ================================
+function update_derived() local(p, ln_, s0, s1, t, g, a, any_solo, aud, pre)
+(
+  any_solo = 0; p = 0; loop(16, any_solo += PB[K_SOLO*16 + p]; p += 1; );
+  p = 0;
+  loop(16,
+    ln_ = LEN[p];
+    s1 = min(floor(PB[K_END*16 + p] * ln_), ln_);
+    s0 = clampv(floor(PB[K_START*16 + p] * ln_), 0, max(s1 - 2, 0));
+    D_S0[p] = s0; D_S1[p] = s1; D_PLEN[p] = s1 - s0;
+    t = PB[K_TUNE*16 + p] + PB[K_FINE*16 + p] * 0.01;
+    D_INC[p] = (SRR[p] > 0 ? SRR[p] / srate : 1) * 2 ^ (t / 12);
+    t = PB[K_ATT*16 + p] * 0.001 * srate;
+    D_AINC[p] = t > 1 ? 1 / t : 1;
+    D_HOLDS[p] = PB[K_HOLD*16 + p] * 0.001 * srate;
+    t = PB[K_DEC*16 + p];
+    D_DCO[p] = t >= 9999 ? 1 : exp(-6.9078 / (max(t, 1) * 0.001 * srate));
+    aud = !PB[K_MUTE*16 + p] && (!any_solo || PB[K_SOLO*16 + p]);
+    g = (aud && PB[K_GAIN*16 + p] > -59.9) ? 10 ^ (PB[K_GAIN*16 + p] / 20) : 0;
+    PB[K_NORM*16 + p] ? (g *= NORMG[p]);
+    a = (PB[K_PAN*16 + p] + 100) / 200 * $pi * 0.5;
+    D_GL[p] = cos(a) * g * 1.41421356;
+    D_GR[p] = sin(a) * g * 1.41421356;
+    D_FT[p] = PB[K_FTYPE*16 + p];
+    D_OUT[p] = PB[K_OUT*16 + p];
+    pre = 1 + PB[K_DRIVE*16 + p] * 0.12;
+    D_DPRE[p] = pre;
+    D_DCMP[p] = 0.55 + 0.45 / pre;
+    p += 1;
+  );
+);
+
+function voice_filter(v) local(p, fc, gg, kk, a1) (
+  p = VP[v];
+  fc = PB[K_CUT*16 + p] * 2 ^ (-5 * PB[K_VCUT*16 + p] * 0.01 * (1 - VVEL[v]));
+  fc = clampv(fc, 20, srate * 0.45);
+  gg = tan($pi * fc / srate);
+  kk = 2 - 1.96 * PB[K_RES*16 + p] * 0.01;
+  a1 = 1 / (1 + gg * (gg + kk));
+  VA1[v] = a1; VA2[v] = gg * a1; VA3[v] = gg * gg * a1; VK[v] = kk;
+);
+
+function trig(p, vel) local(i, v, best, bi, sc_, ch, mono, vs)
+(
+  (LOADED[p] && D_PLEN[p] > 2) ? (
+    ch = PB[K_CHOKE*16 + p]; mono = PB[K_MODE*16 + p];
+    i = 0;
+    loop(NV,
+      VA[i] ? (
+        ((mono && VP[i] == p) || (ch > 0 && VP[i] != p && PB[K_CHOKE*16 + VP[i]] == ch)) ? (VST[i] = 4);
+      );
+      i += 1;
+    );
+    v = -1; best = 1000000000000000; bi = 0; i = 0;
+    loop(NV,
+      v < 0 ? (
+        !VA[i] ? (v = i) : (
+          sc_ = VAGE[i] - (VST[i] == 4 ? 1000000000000 : 0);
+          sc_ < best ? ( best = sc_; bi = i; );
+        );
+      );
+      i += 1;
+    );
+    v < 0 ? (v = bi);
+    VA[v] = 0;
+    vs = PB[K_VSENS*16 + p] * 0.01;
+    VP[v] = p; VPOS[v] = 0; VENV[v] = 0; VST[v] = 1; VT[v] = 0;
+    VVEL[v] = vel; VVG[v] = (1 - vs) + vs * vel ^ 1.5;
+    VI1L[v] = 0; VI2L[v] = 0; VI1R[v] = 0; VI2R[v] = 0;
+    voice_filter(v);
+    trig_ctr += 1; VAGE[v] = trig_ctr;
+    VA[v] = 1;
+    FLASH[p] = 1;
+  );
+);
+
+// swing: inside each pair of steps the off-step starts at 2*swing (1.0 = straight)
+function calc_g(u) local(pr, q) ( pr = floor(u * 0.5); q = u - pr*2; pr*2 + (q >= swing2 ? 1 : 0); );
+function step_start(g) local(pr, odd) ( pr = floor(g * 0.5); odd = g - pr*2; pr*2 + (odd ? swing2 : 0); );
+
+function fire(p, v127) (
+  trig(p, v127 / 127);
+  midi_out ? (
+    MO_CTR[p] > 0 ? midisend(spos, 0x80 | midi_ch, MO_NOTE[p], 0);
+    MO_NOTE[p] = PB[K_NOTE*16 + p];
+    midisend(spos, 0x90 | midi_ch, MO_NOTE[p], clampv(v127|0, 1, 127));
+    MO_CTR[p] = max(16, step_samps * 0.5);
+    mo_any = 1;
+  );
+);
+
+function rec_write(p, g, v127) local(L, s, b) (
+  L = max(1, RL[cur_pat*16 + p]);
+  s = g - floor(g / L) * L;
+  b = (cur_pat*16 + p) * 32 + s;
+  SVEL[b] = clampv(v127|0, 1, 127); SPROB[b] = 100; SRAT[b] = 1;
+  s;
+);
+
+function live_hit(p, v127) local(g, st, stn) (
+  trig(p, v127 / 127);
+  (rec_on && seq_run) ? (
+    g = calc_g(units);
+    st = step_start(g); stn = step_start(g + 1);
+    (units - st) <= (stn - units) ? rec_write(p, g, v127) : ( rec_write(p, g + 1, v127); RSKIP[p] = g + 1; );
+  );
+);
+
+function seq_tick(g) local(p, L, s, b, v, r, bar)
+(
+  bar = g - floor(g / 16) * 16;
+  (q_pat >= 0 && bar == 0) ? ( cur_pat = q_pat; q_pat = -1; slider3 = cur_pat; );
+  p = 0;
+  loop(16,
+    seq_run ? (
+      L = max(1, RL[cur_pat*16 + p]);
+      s = g - floor(g / L) * L;
+      CURST[p] = s;
+      b = (cur_pat*16 + p) * 32 + s;
+      v = SVEL[b];
+      g == RSKIP[p] ? ( RSKIP[p] = -1000000000; ) : (
+        v > 0 ? (
+          (SPROB[b] >= 100 || rand(100) < SPROB[b]) ? (
+            fire(p, v);
+            r = SRAT[b];
+            r > 1 ? ( RT_N[p] = r - 1; RT_INT[p] = step_samps / r; RT_CTR[p] = RT_INT[p]; RT_V[p] = v; rt_any = 1; ) : (RT_N[p] = 0);
+          );
+        );
+      );
+    );
+    (nr_on && HELD[p]) ? (
+      trig(p, HELDV[p] / 127);
+      (rec_on && seq_run) ? rec_write(p, g, HELDV[p]);
+    );
+    p += 1;
+  );
+);
+
+function midi_note_on(n, v) local(p) (
+  learn_pad >= 0 ? ( PB[K_NOTE*16 + learn_pad] = n; learn_done = learn_pad + 1; learn_pad = -1; );
+  p = 0;
+  loop(16,
+    PB[K_NOTE*16 + p] == n ? (
+      live_hit(p, v); HELD[p] = 1; HELDV[p] = v;
+      midi_sel ? (sel_pad = p);
+    );
+    p += 1;
+  );
+);
+function midi_note_off(n) local(p) (
+  p = 0; loop(16, PB[K_NOTE*16 + p] == n ? (HELD[p] = 0); p += 1; );
+);
+
+// ============================== SAMPLE FILES ================================
+function load_pad(p, path) local(fh, chn, sr, n, maxn, base, i, pkv, v, bn, b0, b1, st, j, ok, tr)
+(
+  ok = 0;
+  strcpy(#lp_path, path);
+  fh = file_open(#lp_path);
+  fh >= 0 ? (
+    chn = 'rqsr'; sr = srate;               // REAPER 6.29+: resample to project rate on load
+    (file_riff(fh, chn, sr) > 0 && chn >= 1 && chn <= 64) ? (
+      n = floor(file_avail(fh) / chn);
+      maxn = floor(SLOT / chn);
+      tr = n > maxn; n = min(n, maxn);
+      n > 1 ? (
+        LOADED[p] = 0;
+        i = 0; loop(NV, VP[i] == p ? (VA[i] = 0); i += 1; );
+        base = BUF_BASE + p * SLOT;
+        file_mem(fh, base, n * chn);
+        chn > 2 ? (
+          i = 0; loop(n, base[i*2] = base[i*chn]; base[i*2 + 1] = base[i*chn + 1]; i += 1; );
+          chn = 2;
+        );
+        NCH[p] = chn; SRR[p] = sr > 0 ? sr : srate; LEN[p] = n;
+        pkv = 0; i = 0;   // chunked: EEL2 caps a single loop() at ~1M iterations
+        loop(ceil(n * chn / 500000),
+          loop(min(500000, n * chn - i), v = abs(base[i]); v > pkv ? (pkv = v); i += 1; );
+        );
+        NORMG[p] = pkv > 0.00001 ? min(1 / pkv, 32) : 1;
+        bn = 0;
+        loop(TB,
+          b0 = floor(bn * n / TB); b1 = max(b0 + 1, floor((bn + 1) * n / TB)); st = max(1, floor((b1 - b0) / 200));
+          v = 0; j = b0;
+          while (j < b1) ( v = max(v, abs(base[j * chn])); j += st; );
+          THUMB[p*TB + bn] = min(1, v * NORMG[p]);
+          bn += 1;
+        );
+        base_name(100 + p, #lp_path);
+        strcpy(200 + p, #lp_path); strcpy(400 + p, #lp_path);
+        LOADED[p] = 1; ok = 1;
+        tr ? sprintf(#status, "Pad %02d  <-  %s   (truncated to %.1f s)", p + 1, 100 + p, n / SRR[p])
+           : sprintf(#status, "Pad %02d  <-  %s", p + 1, 100 + p);
+      ) : sprintf(#status, "Pad %02d: file contains no audio", p + 1);
+    ) : sprintf(#status, "Pad %02d: unsupported file format", p + 1);
+    file_close(fh);
+  ) : sprintf(#status, "Pad %02d: could not open file", p + 1);
+  set_status_t();
+  ok;
+);
+
+function load_new(p, path) (
+  load_pad(p, path) ? (
+    PB[K_START*16 + p] = 0; PB[K_END*16 + p] = 1; PB[K_REV*16 + p] = 0;
+    1;
+  ) : 0;
+);
+
+function clear_pad(p) local(i) (
+  LOADED[p] = 0;
+  i = 0; loop(NV, VP[i] == p ? (VA[i] = 0); i += 1; );
+  LEN[p] = 0;
+  strcpy(100 + p, ""); strcpy(200 + p, ""); strcpy(400 + p, "");
+  sprintf(#status, "Pad %02d cleared", p + 1); set_status_t();
+);
+
+// bridge file written by 5am_GEN16_Send.lua into REAPER/Data
+function bridge_read(force, opad) local(fh, t, tg, cnt, i, p, a, b, rv, nl)
+(
+  nl = 0;
+  fh = file_open(#bridge_file);
+  fh >= 0 ? (
+    file_string(fh, #bl); trimnl(#bl);
+    strcmp(#bl, "GEN16") == 0 ? (
+      file_string(fh, #bl); trimnl(#bl); t = parse_int(#bl);
+      file_string(fh, #bl2); trimnl(#bl2);
+      (force || (strcmp(#bl2, #bridge_last) != 0 && abs(time() - t) < 30)) ? (
+        strcpy(#bridge_last, #bl2);
+        file_string(fh, #bl); trimnl(#bl); tg = parse_int(#bl);
+        file_string(fh, #bl); trimnl(#bl); cnt = parse_int(#bl);
+        p = opad >= 0 ? opad : (tg >= 0 ? tg : sel_pad);
+        p = clampv(p, 0, 15);
+        i = 0;
+        loop(min(cnt, 16),
+          file_string(fh, #bpath); trimnl(#bpath);
+          file_string(fh, #bl); trimnl(#bl); a = parse_int(#bl);
+          file_string(fh, #bl); trimnl(#bl); b = parse_int(#bl);
+          file_string(fh, #bl); trimnl(#bl); rv = parse_int(#bl);
+          (p + i < 16 && strlen(#bpath) > 0) ? (
+            load_new(p + i, #bpath) ? (
+              b <= a ? (b = 1000000);
+              PB[K_END*16 + p + i] = clampv(b / 1000000, 0.002, 1);
+              PB[K_START*16 + p + i] = clampv(a / 1000000, 0, PB[K_END*16 + p + i] - 0.002);
+              PB[K_REV*16 + p + i] = rv ? 1 : 0;
+              nl += 1;
+            );
+          );
+          i += 1;
+        );
+        sel_pad = p;
+        nl > 1 ? ( sprintf(#status, "Loaded %d samples into pads %02d-%02d", nl, p + 1, p + nl); set_status_t(); );
+      );
+    ) : (
+      force ? ( strcpy(#status, "Bridge file is not a GEN-16 file"); set_status_t(); );
+    );
+    file_close(fh);
+  ) : (
+    force ? ( strcpy(#status, "Nothing sent yet: select items in REAPER and run the action  5am_GEN16_Send.lua"); set_status_t(); );
+  );
+  nl;
+);
+
+function zc_snap(p, v) local(ln_, chn, base, c, d, a, found, best) (
+  ln_ = LEN[p]; chn = NCH[p]; base = BUF_BASE + p * SLOT;
+  c = floor(v * ln_); best = c; found = 0; d = 0;
+  while (!found && d < 1500) (
+    a = c + d;
+    (a >= 0 && a + 1 < ln_ && ((base[a*chn] <= 0) != (base[(a + 1)*chn] <= 0))) ? ( found = 1; best = a + 1; );
+    !found ? (
+      a = c - d;
+      (a >= 0 && a + 1 < ln_ && ((base[a*chn] <= 0) != (base[(a + 1)*chn] <= 0))) ? ( found = 1; best = a + 1; );
+    );
+    d += 1;
+  );
+  ln_ > 0 ? best / ln_ : v;
+);
+
+// ============================== UI PRIMITIVES ===============================
+function col(c) ( gfx_r = ((c >> 16) & 255) / 255; gfx_g = ((c >> 8) & 255) / 255; gfx_b = (c & 255) / 255; gfx_a = 1; );
+
+function setup_fonts() (
+  gfx_setfont(1, "Segoe UI", floor(13*sc + 0.5));
+  gfx_setfont(2, "Segoe UI", floor(13*sc + 0.5), 'b');
+  gfx_setfont(3, "Segoe UI", floor(11*sc + 0.5));
+  gfx_setfont(4, "Segoe UI", floor(11*sc + 0.5), 'b');
+  gfx_setfont(5, "Segoe UI", floor(23*sc + 0.5), 'b');
+  gfx_setfont(6, "Segoe UI", floor(16*sc + 0.5), 'b');
+);
+function fnt(n) ( gfx_setfont(n); );
+
+function hit(x, y, w, h) ( mx >= x && mx < x + w && my >= y && my < y + h; );
+
+function rect(x, y, w, h) local(x0, y0, x1, y1) (
+  x0 = floor(ox + x*sc + 0.5); y0 = floor(oy + y*sc + 0.5);
+  x1 = floor(ox + (x + w)*sc + 0.5); y1 = floor(oy + (y + h)*sc + 0.5);
+  (w > 0 && x1 <= x0) ? (x1 = x0 + 1);
+  (h > 0 && y1 <= y0) ? (y1 = y0 + 1);
+  (x1 > x0 && y1 > y0) ? gfx_rect(x0, y0, x1 - x0, y1 - y0);
+);
+function rframe(x, y, w, h) local(x0, y0, x1, y1) (
+  x0 = floor(ox + x*sc + 0.5); y0 = floor(oy + y*sc + 0.5);
+  x1 = floor(ox + (x + w)*sc + 0.5); y1 = floor(oy + (y + h)*sc + 0.5);
+  gfx_rect(x0, y0, x1 - x0, 1); gfx_rect(x0, y1 - 1, x1 - x0, 1);
+  gfx_rect(x0, y0, 1, y1 - y0); gfx_rect(x1 - 1, y0, 1, y1 - y0);
+);
+function rrect(x, y, w, h, r) local(x0, y0, x1, y1, rr) (
+  x0 = floor(ox + x*sc + 0.5); y0 = floor(oy + y*sc + 0.5);
+  x1 = floor(ox + (x + w)*sc + 0.5); y1 = floor(oy + (y + h)*sc + 0.5);
+  rr = min(floor(r*sc), floor(min(x1 - x0, y1 - y0) / 2));
+  rr < 2 ? ( (x1 > x0 && y1 > y0) ? gfx_rect(x0, y0, x1 - x0, y1 - y0); ) : (
+    gfx_rect(x0 + rr, y0, x1 - x0 - 2*rr, y1 - y0);
+    gfx_rect(x0, y0 + rr, rr, y1 - y0 - 2*rr);
+    gfx_rect(x1 - rr, y0 + rr, rr, y1 - y0 - 2*rr);
+    gfx_circle(x0 + rr, y0 + rr, rr, 1, 1);
+    gfx_circle(x1 - rr - 1, y0 + rr, rr, 1, 1);
+    gfx_circle(x0 + rr, y1 - rr - 1, rr, 1, 1);
+    gfx_circle(x1 - rr - 1, y1 - rr - 1, rr, 1, 1);
+  );
+);
+function line(x1, y1, x2, y2) ( gfx_line(ox + x1*sc, oy + y1*sc, ox + x2*sc, oy + y2*sc, 1); );
+
+function text(x, y, s) ( gfx_x = ox + x*sc; gfx_y = oy + y*sc; gfx_drawstr(s); );
+function textc(x, y, w, h, s) local(tw, th) (
+  gfx_measurestr(s, tw, th);
+  gfx_x = ox + x*sc + (w*sc - tw) * 0.5; gfx_y = oy + y*sc + (h*sc - th) * 0.5; gfx_drawstr(s);
+);
+function textl(x, y, w, h, s) local(tw, th) (
+  gfx_measurestr(s, tw, th);
+  gfx_x = ox + x*sc; gfx_y = oy + y*sc + (h*sc - th) * 0.5; gfx_drawstr(s);
+);
+function textr(x, y, w, h, s) local(tw, th) (
+  gfx_measurestr(s, tw, th);
+  gfx_x = ox + (x + w)*sc - tw; gfx_y = oy + y*sc + (h*sc - th) * 0.5; gfx_drawstr(s);
+);
+function fitstr(dst, src, w) local(tw, th, n) (
+  strcpy(dst, src); gfx_measurestr(dst, tw, th);
+  n = strlen(src);
+  while (n > 1 && tw > w*sc) (
+    n = max(n - ((tw > w*sc*1.5) ? 3 : 1), 1);
+    strcpy_substr(dst, src, 0, n); strcat(dst, ".."); gfx_measurestr(dst, tw, th);
+  );
+  dst;
+);
+
+function arc(cx, cy, r, n0, n1, thick) local(a0, a1, segs, i, a, b, t, rr, px, py)
+(
+  n1 - n0 > 0.002 ? (
+    a0 = (-0.75 + 1.5*n0) * $pi; a1 = (-0.75 + 1.5*n1) * $pi;
+    segs = max(2, ceil((n1 - n0) * 36));
+    px = ox + cx*sc; py = oy + cy*sc;
+    t = 0;
+    loop(max(1, floor(thick*sc + 0.5)),
+      rr = r*sc - t; i = 0;
+      loop(segs,
+        a = a0 + (a1 - a0) * i / segs; b = a0 + (a1 - a0) * (i + 1) / segs;
+        gfx_line(px + sin(a)*rr, py - cos(a)*rr, px + sin(b)*rr, py - cos(b)*rr, 1);
+        i += 1;
+      );
+      t += 1;
+    );
+  );
+);
+
+function gbox(x, y, w, h, t) (
+  col(C_PANEL2); rrect(x, y, w, h, 5);
+  strlen(t) > 0 ? ( fnt(4); col(C_TXT3); text(x + 10, y + 6, t); );
+);
+
+function btn(x, y, w, h, s, on, ac) local(hv, r) (
+  hv = hit(x, y, w, h) && !ui_active;
+  col(on ? ac : (hv ? C_BTNH : C_BTN)); rrect(x, y, w, h, 4);
+  fnt(4); col(on ? C_BG : (hv ? C_TXT : C_TXT2)); textc(x, y, w, h, s);
+  r = 0;
+  (hv && lclick) ? ( lclick = 0; r = 1; );
+  r;
+);
+
+function tipif(x, y, w, h, s) ( (hit(x, y, w, h) && !ui_active) ? strcpy(#tip, s); );
+
+// returns -1 / +1 when clicked on the arrows, dragged vertically, or wheeled
+function spin(id, x, y, w, h, txt) local(hv, d, stp) (
+  d = 0;
+  hv = hit(x, y, w, h);
+  col((hv || ui_active == id) ? C_BTNH : C_BTN); rrect(x, y, w, h, 4);
+  fnt(4); col(C_TXT3); textc(x, y, 14, h, "<"); textc(x + w - 14, y, 14, h, ">");
+  col(C_TXT); textc(x + 12, y, w - 24, h, txt);
+  (hv && lclick && !ui_active) ? (
+    lclick = 0;
+    mx < x + 16 ? (d = -1) : (mx > x + w - 16 ? (d = 1) : ( ui_active = id; drag_y0 = my; spin_last = 0; ));
+  );
+  ui_active == id ? (
+    stp = floor((drag_y0 - my) / 7);
+    d = stp - spin_last; spin_last = stp;
+  );
+  (hv && wheel != 0 && !ui_active) ? ( d = wheel > 0 ? 1 : -1; wheel = 0; );
+  d;
+);
+
+function mini_knob(id, cx, cy, r, n, bip, kc) local(hv, nn, a, act)
+(
+  nn = n;
+  hv = hit(cx - r - 3, cy - r - 3, 2*r + 6, 2*r + 6);
+  (hv && lclick && !ui_active) ? (
+    lclick = 0;
+    (dbl || alt) ? (nn = -2) : ( ui_active = id; drag_y0 = my; drag_n0 = n; drag_sh = shift; );
+  );
+  ui_active == id ? (
+    shift != drag_sh ? ( drag_sh = shift; drag_y0 = my; drag_n0 = n; );
+    nn = clampv(drag_n0 + (drag_y0 - my) * (shift ? 0.0012 : 0.0065), 0, 1);
+  );
+  (hv && wheel != 0 && !ui_active) ? ( nn = clampv(n + wheel * (shift ? 0.005 : 0.03), 0, 1); wheel = 0; );
+  act = hv || ui_active == id;
+  col(C_TRACK); arc(cx, cy, r, 0, 1, 3);
+  col(kc); bip ? arc(cx, cy, r, min(n, 0.5), max(n, 0.5), 3) : arc(cx, cy, r, 0, n, 3);
+  col(act ? C_KNOBH : C_KNOB); gfx_circle(ox + cx*sc, oy + cy*sc, (r - 5)*sc, 1, 1);
+  a = (-0.75 + 1.5*n) * $pi;
+  col(C_TXT);
+  gfx_line(ox + (cx + sin(a)*(r - 5)*0.25)*sc, oy + (cy - cos(a)*(r - 5)*0.25)*sc,
+           ox + (cx + sin(a)*(r - 6))*sc,      oy + (cy - cos(a)*(r - 6))*sc, 1);
+  nn;
+);
+
+function knob(id, cx, cy, r, n, bip, kc, lbl, vtxt) local(nn, act) (
+  nn = mini_knob(id, cx, cy, r, n, bip, kc);
+  act = hit(cx - r - 3, cy - r - 3, 2*r + 6, 2*r + 6) || ui_active == id;
+  fnt(3); col(C_TXT2); textc(cx - 36, cy + r + 3, 72, 12, lbl);
+  fnt(4); col(act ? kc : C_TXT); textc(cx - 36, cy + r + 15, 72, 12, vtxt);
+  nn;
+);
+
+function pknob(k, cx, cy, r, kc) local(v, n, nn) (
+  v = PB[k*16 + sel_pad]; n = to_norm(k, v); fmt(k, v, #kv);
+  nn = knob(1000 + k, cx, cy, r, n, MB_BIP[k], kc, 300 + k, #kv);
+  nn == -2 ? param_set(k, sel_pad, pdef(k, sel_pad)) : (nn != n ? param_set(k, sel_pad, from_norm(k, nn)));
+  (hit(cx - r - 3, cy - r - 3, 2*r + 6, 2*r + 6) || ui_active == 1000 + k) ?
+    sprintf(#tip, "%s: %s     drag = adjust  |  Shift = fine  |  wheel  |  double-click / Alt-click = reset", 300 + k, #kv);
+);
+
+function pspin(k, x, y, w, h) local(d) (
+  fmt(k, PB[k*16 + sel_pad], #ps);
+  d = spin(1100 + k, x, y, w, h, #ps);
+  d ? param_set(k, sel_pad, PB[k*16 + sel_pad] + d);
+);
+
+function seg(k, x, y, w, h, n0, n1) local(i, cnt, sw, sx, on, hv) (
+  cnt = n1 - n0 + 1; sw = w / cnt; i = 0;
+  loop(cnt,
+    sx = x + i*sw; on = PB[k*16 + sel_pad] == n0 + i;
+    hv = hit(sx, y, sw, h) && !ui_active;
+    col(on ? C_ACC2 : (hv ? C_BTNH : C_BTN)); rrect(sx + 1, y, sw - 2, h, 3);
+    fmt(k, n0 + i, #segt); fnt(4); col(on ? C_BG : C_TXT2); textc(sx, y, sw, h, #segt);
+    (hv && lclick) ? ( lclick = 0; param_set(k, sel_pad, n0 + i); );
+    i += 1;
+  );
+);
+
+function lin_norm(pkv) ( pkv <= 0.000001 ? 0 : clampv((20 * log10(pkv) + 60) / 72, 0, 1); );
+
+function fader(id, x, y, w, h, n, pl, pr, mc) local(hv, nn, ty, z, m)
+(
+  nn = n;
+  hv = hit(x, y - 6, w, h + 12);
+  (hv && lclick && !ui_active) ? (
+    lclick = 0;
+    (dbl || alt) ? (nn = -2) : ( ui_active = id; drag_y0 = my; drag_n0 = n; drag_sh = shift; );
+  );
+  ui_active == id ? (
+    shift != drag_sh ? ( drag_sh = shift; drag_y0 = my; drag_n0 = n; );
+    nn = clampv(drag_n0 + (drag_y0 - my) / h * (shift ? 0.2 : 1), 0, 1);
+  );
+  (hv && wheel != 0 && !ui_active) ? ( nn = clampv(n + wheel / 144, 0, 1); wheel = 0; );
+  col(C_BG); rrect(x + 9, y, 6, h, 3);
+  z = y + h * (1 - 60/72);
+  col(C_LINE); rect(x + 4, z, 16, 1);
+  col(C_BG); rect(x + w - 13, y, 4, h);
+  m = lin_norm(pl); col(m > 60/72 ? C_RED : mc); rect(x + w - 13, y + h*(1 - m), 4, h*m);
+  pr >= 0 ? (
+    col(C_BG); rect(x + w - 8, y, 4, h);
+    m = lin_norm(pr); col(m > 60/72 ? C_RED : mc); rect(x + w - 8, y + h*(1 - m), 4, h*m);
+  );
+  ty = y + h * (1 - (nn == -2 ? n : nn));
+  col((hv || ui_active == id) ? C_TXT : 0xB4BAC4); rrect(x + 2, ty - 6, 20, 12, 3);
+  col(C_BG); rect(x + 5, ty, 14, 1);
+  nn;
+);
+
+function ui_trig(p, v) ( UQ[uq_w*2] = p; UQ[uq_w*2 + 1] = v; uq_w = (uq_w + 1) % 64; );
+
+function mi(dst, lbl, chk) ( strlen(dst) > 0 ? strcat(dst, "|"); chk ? strcat(dst, "!"); strcat(dst, lbl); );
+
+function value_menu(k, p) local(v, r) (
+  strcpy(#vm, ""); v = MB_MIN[k];
+  loop(MB_MAX[k] - MB_MIN[k] + 1, fmt(k, v, #vmt); mi(#vm, #vmt, PB[k*16 + p] == v); v += 1; );
+  gfx_x = mouse_x; gfx_y = mouse_y;
+  r = gfx_showmenu(#vm);
+  r > 0 ? param_set(k, p, MB_MIN[k] + r - 1);
+);
+
+function pad_menu(p) local(r, k) (
+  strcpy(#mn, "");
+  mi(#mn, "Load last sent items  (5am_GEN16_Send.lua)", 0);
+  mi(#mn, "Clear pad", 0);
+  mi(#mn, "Copy pad settings", 0);
+  mi(#mn, has_clip_pad ? "Paste pad settings" : "#Paste pad settings", 0);
+  mi(#mn, "Reset pad settings", 0);
+  mi(#mn, "Learn MIDI note (play a note next)", learn_pad == p);
+  mi(#mn, "Choke group...", 0);
+  mi(#mn, "Output bus...", 0);
+  mi(#mn, "Colour...", 0);
+  mi(#mn, "Mute", PB[K_MUTE*16 + p]);
+  mi(#mn, "Solo", PB[K_SOLO*16 + p]);
+  mi(#mn, "Reverse", PB[K_REV*16 + p]);
+  mi(#mn, "Normalize", PB[K_NORM*16 + p]);
+  mi(#mn, "Mono (new hit cuts previous)", PB[K_MODE*16 + p]);
+  gfx_x = mouse_x; gfx_y = mouse_y;
+  r = gfx_showmenu(#mn);
+  r == 1 ? ( bridge_read(1, p); ) :
+  r == 2 ? ( clear_pad(p); ) :
+  r == 3 ? ( k = 0; loop(NK, CLIP_PAD[k] = PB[k*16 + p]; k += 1; ); has_clip_pad = 1;
+             sprintf(#status, "Copied settings of pad %02d", p + 1); set_status_t(); ) :
+  r == 4 ? ( has_clip_pad ? ( k = 0; loop(NK, k != K_NOTE ? param_set(k, p, CLIP_PAD[k]); k += 1; ); ); ) :
+  r == 5 ? ( pad_reset(p); ) :
+  r == 6 ? ( learn_pad = learn_pad == p ? -1 : p; ) :
+  r == 7 ? ( value_menu(K_CHOKE, p); ) :
+  r == 8 ? ( value_menu(K_OUT, p); ) :
+  r == 9 ? ( value_menu(K_COLOR, p); ) :
+  r == 10 ? ( param_set(K_MUTE, p, !PB[K_MUTE*16 + p]); ) :
+  r == 11 ? ( param_set(K_SOLO, p, !PB[K_SOLO*16 + p]); ) :
+  r == 12 ? ( param_set(K_REV, p, !PB[K_REV*16 + p]); ) :
+  r == 13 ? ( param_set(K_NORM, p, !PB[K_NORM*16 + p]); ) :
+  r == 14 ? ( param_set(K_MODE, p, !PB[K_MODE*16 + p]); );
+);
+
+function step_menu(b) local(r, v, pr, rt) (
+  v = SVEL[b]; pr = SPROB[b]; rt = SRAT[b];
+  strcpy(#mn, "");
+  mi(#mn, "Velocity 127 (accent)", v == 127); mi(#mn, "Velocity 100", v == 100); mi(#mn, "Velocity 80", v == 80);
+  mi(#mn, "Velocity 60", v == 60); mi(#mn, "Velocity 40 (ghost)", v == 40);
+  mi(#mn, "Probability 100%", v > 0 && pr == 100); mi(#mn, "Probability 75%", v > 0 && pr == 75);
+  mi(#mn, "Probability 50%", v > 0 && pr == 50); mi(#mn, "Probability 25%", v > 0 && pr == 25);
+  mi(#mn, "Ratchet x1", v > 0 && rt == 1); mi(#mn, "Ratchet x2", v > 0 && rt == 2);
+  mi(#mn, "Ratchet x3", v > 0 && rt == 3); mi(#mn, "Ratchet x4", v > 0 && rt == 4);
+  mi(#mn, "Clear step", 0);
+  gfx_x = mouse_x; gfx_y = mouse_y;
+  r = gfx_showmenu(#mn);
+  (r >= 1 && r <= 5) ? ( SVEL[b] = r == 1 ? 127 : r == 2 ? 100 : r == 3 ? 80 : r == 4 ? 60 : 40; ) :
+  (r >= 6 && r <= 9) ? ( v == 0 ? (SVEL[b] = 100); SPROB[b] = 100 - (r - 6) * 25; ) :
+  (r >= 10 && r <= 13) ? ( v == 0 ? (SVEL[b] = 100); SRAT[b] = r - 9; ) :
+  r == 14 ? ( SVEL[b] = 0; SPROB[b] = 100; SRAT[b] = 1; );
+);
+
+function select_pattern(i) (
+  seq_run ? ( q_pat = i == cur_pat ? -1 : i; ) : ( cur_pat = i; q_pat = -1; );
+  slider3 = i; notify_slider(3);
+);
+
+function pad_at(x, y) local(p, c, r) (
+  p = -1;
+  (x >= 20 && x < 348 && y >= 94 && y < 422) ? (
+    c = floor((x - 20) / 84); r = floor((y - 94) / 84); p = (3 - r) * 4 + c;
+  );
+  (view == 1 && x >= 368 && x < 494 && y >= SEQ_Y0 && y < SEQ_Y0 + 16 * SEQ_RH) ? (p = floor((y - SEQ_Y0) / SEQ_RH));
+  (view == 2 && x >= 372 && x < 372 + 16 * 42 && y >= 72 && y < 676) ? (p = floor((x - 372) / 42));
+  (p >= 0 && p < 16) ? p : -1;
+);
+
+// ============================== STEP CELL ===================================
+function step_cell(p, s, x, y, w, h, L) local(b, v, pr, rt, on, inlen, pc, bg, hh, i, hv, nvc)
+(
+  b = (cur_pat*16 + p) * 32 + s;
+  v = SVEL[b]; pr = SPROB[b]; rt = SRAT[b]; on = v > 0; inlen = s < L;
+  pc = PAL[PB[K_COLOR*16 + p]];
+  bg = !inlen ? C_OFFLEN : ((floor(s / 4) % 2) ? C_STEP2 : C_STEP1);
+  col(bg); rrect(x + 1, y + 1, w - 2, h - 2, 3);
+  on ? (
+    col(cmix(bg, pc, inlen ? 0.28 : 0.10)); rrect(x + 1, y + 1, w - 2, h - 2, 3);
+    hh = (h - 6) * v / 127;
+    col(inlen ? pc : cmix(bg, pc, 0.3));
+    gfx_a = pr < 100 ? 0.35 + 0.6 * pr / 100 : 1;
+    rect(x + 3, y + h - 3 - hh, w - 6, hh);
+    gfx_a = 1;
+    rt > 1 ? ( col(C_BG); i = 1; loop(rt - 1, rect(x + 3 + i * (w - 6) / rt, y + 3, 1, h - 6); i += 1; ); );
+    (pr < 100 && w >= 20 && h >= 24) ? ( fnt(3); col(C_TXT); sprintf(#sct, "%d", pr); textc(x, y + 2, w, 12, #sct); );
+  );
+  (seq_run && CURST[p] == s && inlen) ? ( col(C_TXT); rframe(x + 1, y + 1, w - 2, h - 2); );
+
+  hv = hit(x, y, w, h);
+  (hv && (!ui_active || (ui_active >= 8000 && ui_active < 8010))) ? (
+    lclick ? (
+      lclick = 0; sel_pad = p;
+      edit_mode == 0 ? ( paint_v = on ? 0 : (shift ? 127 : 100); ui_active = 8000; ) :
+      edit_mode == 1 ? ( ui_active = 8001; ) :
+      edit_mode == 2 ? ( ui_active = 8002; ) :
+      ( !on ? ( SVEL[b] = 100; SPROB[b] = 100; SRAT[b] = 2; ) : ( SRAT[b] = (SRAT[b] % 4) + 1; ); );
+    );
+    (ui_active == 8000 && lb) ? (
+      paint_v > 0 ? ( SVEL[b] == 0 ? ( SVEL[b] = paint_v; SPROB[b] = 100; SRAT[b] = 1; ); ) : ( SVEL[b] = 0; );
+    );
+    (ui_active == 8001 && lb) ? ( SVEL[b] = floor(clampv((y + h - my) / h * 127, 1, 127) + 0.5); );
+    (ui_active == 8002 && lb && SVEL[b] > 0) ? (
+      nvc = floor(clampv((y + h - my) / h, 0, 1) * 4 + 0.5) * 25;
+      SPROB[b] = max(nvc, 25);
+    );
+    rclick ? step_menu(b);
+    (wheel != 0 && SVEL[b] > 0) ? ( SVEL[b] = clampv(SVEL[b] + (wheel > 0 ? 8 : -8), 1, 127); wheel = 0; );
+    on ? sprintf(#tip, "Step %d   vel %d   prob %d%%   ratchet x%d      right-click = step menu   wheel = velocity", s + 1, v, pr, rt)
+       : sprintf(#tip, "Step %d  (empty)   click = add   Shift-click = accent   drag = paint", s + 1);
+  );
+);
+
+// ============================== VIEWS =======================================
+function draw_header() local(i, x, hv, n, nn, on, q, blink)
+(
+  col(C_PANEL); rect(0, 0, 1120, 56);
+  col(C_LINE); rect(0, 56, 1120, 1);
+  fnt(5); col(C_ACC); text(18, 7, "GEN-16");
+  fnt(3); col(C_TXT2); text(20, 35, "DRUM MACHINE  /  5AM");
+
+  i = 0;
+  loop(3,
+    btn(160 + i*72, 14, 68, 28, i == 0 ? "PADS" : (i == 1 ? "SEQ" : "MIXER"), view == i, C_ACC) ? (view = i);
+    i += 1;
+  );
+  tipif(160, 14, 212, 28, "Views (Tab cycles)");
+
+  blink = (floor(now * 3) % 2) == 0;
+  host_play ? (
+    btn(392, 14, 56, 28, "SYNC", 1, C_GRN);
+    tipif(392, 14, 56, 28, "Following REAPER transport");
+  ) : (
+    btn(392, 14, 56, 28, int_run ? "STOP" : "PLAY", int_run, C_GRN) ? (int_run = !int_run);
+    tipif(392, 14, 56, 28, "Run the sequencer without REAPER's transport (Space)");
+  );
+  btn(452, 14, 50, 28, "REC", rec_on && (blink || !seq_run), C_RED) ? (rec_on = !rec_on);
+  tipif(452, 14, 50, 28, "Live record: pad hits (MIDI, mouse, keys, note repeat) are quantised into the pattern");
+
+  col(C_BG); rrect(510, 14, 100, 28, 4);
+  fnt(2); col(C_TXT); sprintf(#ht, "%.1f", cur_tempo); textl(518, 14, 50, 28, #ht);
+  fnt(3); col(C_TXT3); text(518, 30, "BPM");
+  fnt(6); col(seq_run ? C_ACC2 : C_TXT3);
+  sprintf(#ht, "%02d", seq_run ? max(CURST[sel_pad], 0) + 1 : 0); textr(560, 14, 44, 28, #ht);
+
+  i = 0;
+  loop(8,
+    x = 620 + i*27; on = cur_pat == i; q = q_pat == i;
+    hv = hit(x, 14, 25, 28) && !ui_active;
+    col(on ? C_ACC : ((q && blink) ? C_ACC2 : (hv ? C_BTNH : C_BTN))); rrect(x, 14, 25, 28, 4);
+    strcpy_substr(#pl, "ABCDEFGH", i, 1);
+    fnt(2); col((on || (q && blink)) ? C_BG : C_TXT); textc(x, 14, 25, 24, #pl);
+    pat_used(i) ? ( col(on ? C_BG : C_ACC); rect(x + 10, 36, 5, 2); );
+    (hv && lclick) ? (
+      lclick = 0;
+      ctrl ? ( pat_copy_to(cur_pat, i); sprintf(#status, "Pattern copied to %s", #pl); set_status_t(); );
+      select_pattern(i);
+    );
+    i += 1;
+  );
+  tipif(620, 14, 214, 28, "Patterns A-H: click = switch (queued to the next bar while playing)  |  Ctrl-click = copy current pattern here");
+
+  n = (slider2 - 50) / 25;
+  nn = mini_knob(10, 862, 28, 14, n, 0, C_ACC2);
+  nn == -2 ? (nn = 0);
+  nn != n ? ( slider2 = floor(50 + 25*nn + 0.5); notify_slider(2); );
+  fnt(3); col(C_TXT3); text(882, 12, "SWING");
+  fnt(2); col(C_TXT); sprintf(#ht, "%d%%", slider2); text(882, 26, #ht);
+  tipif(846, 12, 80, 32, "MPC swing: delays every 2nd step (50% = straight, 66% = triplet feel)");
+
+  rate_name(slider4|0, #ht);
+  hv = hit(932, 14, 52, 28);
+  btn(932, 14, 52, 28, #ht, 0, C_ACC) ? ( slider4 = ((slider4|0) + 1) % 5; notify_slider(4); );
+  (hv && rclick) ? (
+    strcpy(#mn, ""); i = 0;
+    loop(5, rate_name(i, #ht); mi(#mn, #ht, (slider4|0) == i); i += 1; );
+    gfx_x = mouse_x; gfx_y = mouse_y;
+    i = gfx_showmenu(#mn);
+    i > 0 ? ( slider4 = i - 1; notify_slider(4); );
+  );
+  tipif(932, 14, 52, 28, "Step rate (click = next, right-click = menu)");
+
+  n = (slider1 + 60) / 72;
+  nn = mini_knob(11, 1004, 28, 14, n, 0, C_ACC);
+  nn == -2 ? (nn = 60/72);
+  nn != n ? ( slider1 = floor((-60 + 72*nn) * 10 + 0.5) / 10; notify_slider(1); );
+  fnt(3); col(C_TXT3); text(1024, 12, "MASTER");
+  fnt(2); col(C_TXT); sprintf(#ht, "%.1f dB", slider1); text(1024, 26, #ht);
+
+  col(C_BG); rect(1088, 12, 6, 32); rect(1097, 12, 6, 32);
+  n = lin_norm(mph_l); col(n > 60/72 ? C_RED : C_GRN); rect(1088, 12 + 32*(1 - n), 6, 32*n);
+  n = lin_norm(mph_r); col(n > 60/72 ? C_RED : C_GRN); rect(1097, 12 + 32*(1 - n), 6, 32*n);
+);
+
+function draw_pad(p, x, y, w, h) local(pc, base, ld, sel, i, a, bx, mid)
+(
+  ld = LOADED[p]; sel = p == sel_pad;
+  pc = PAL[PB[K_COLOR*16 + p]];
+  base = cmix(C_PAD, pc, ld ? 0.20 : 0.05);
+  base = cmix(base, pc, min(1, FLASH[p]) * 0.7);
+  sel ? ( col(C_TXT); rrect(x - 2, y - 2, w + 4, h + 4, 8); col(C_PANEL); rrect(x - 1, y - 1, w + 2, h + 2, 7); );
+  col(base); rrect(x, y, w, h, 6);
+  (learn_pad == p && (floor(now * 4) % 2)) ? ( col(C_ACC2); rframe(x, y, w, h); rframe(x + 1, y + 1, w - 2, h - 2); );
+  col(pc); gfx_a = ld ? 0.95 : 0.35; rect(x + 6, y + 6, 16, 3); gfx_a = 1;
+  fnt(4); col(ld ? C_TXT : C_TXT3); sprintf(#ptmp, "%02d", p + 1); text(x + 6, y + 11, #ptmp);
+  fnt(3); col(C_TXT2); note_name(PB[K_NOTE*16 + p], #ptmp); textr(x, y + 5, w - 6, 14, #ptmp);
+  ld ? (
+    col(pc); gfx_a = 0.8; mid = y + 42;
+    i = 0;
+    loop(TB, a = THUMB[p*TB + i] * 13; bx = x + 6 + i * (w - 12) / TB; line(bx, mid - a, bx, mid + a); i += 1; );
+    gfx_a = 1;
+    fnt(3); col(C_TXT); fitstr(#ptmp, 100 + p, w - 12); text(x + 6, y + h - 19, #ptmp);
+  ) : (
+    fnt(3); col(C_TXT3); text(x + 6, y + h - 19, "empty");
+  );
+  PB[K_MUTE*16 + p] ? ( col(C_RED); rrect(x + w - 19, y + 22, 14, 12, 2); fnt(4); col(C_BG); textc(x + w - 19, y + 22, 14, 12, "M"); );
+  PB[K_SOLO*16 + p] ? ( col(C_YEL); rrect(x + w - 35, y + 22, 14, 12, 2); fnt(4); col(C_BG); textc(x + w - 35, y + 22, 14, 12, "S"); );
+  PB[K_CHOKE*16 + p] > 0 ? ( fnt(3); col(C_TXT3); sprintf(#ptmp, "C%d", PB[K_CHOKE*16 + p]); text(x + 6, y + 24, #ptmp); );
+  a = min(1, PKH[p] * 1.2);
+  a > 0.002 ? ( col(pc); rect(x + 4, y + h - 4, (w - 8) * a, 2); );
+);
+
+function draw_left() local(p, c, r, px, py, vel, y, d)
+(
+  col(C_PANEL); rrect(12, 64, 340, 620, 6);
+  fnt(4); col(C_TXT2); text(22, 72, "PADS");
+  fnt(3); col(C_TXT3); textr(100, 70, 244, 16, full_vel ? "click = play" : "click height = velocity");
+
+  p = 0;
+  loop(16,
+    c = p % 4; r = 3 - floor(p / 4);
+    px = 20 + c*84; py = 94 + r*84;
+    draw_pad(p, px, py, 76, 76);
+    (hit(px, py, 76, 76) && !ui_active) ? (
+      LOADED[p] ? strcpy(#tip, 200 + p) : strcpy(#tip, "Empty pad: drop audio here, or right-click for options");
+      lclick ? (
+        lclick = 0; sel_pad = p;
+        !ctrl ? (
+          vel = full_vel ? 127 : floor(clampv(127 - (my - py) / 76 * 97, 30, 127));
+          ui_trig(p, vel); HELD[p] = 1; HELDV[p] = vel; held_ui = p + 1;
+        );
+        ui_active = 9000 + p;
+      );
+      rclick ? pad_menu(p);
+    );
+    p += 1;
+  );
+
+  y = 432;
+  col(C_LINE); rect(20, y, 324, 1);
+  fnt(4); col(C_TXT2); text(22, y + 8, "PERFORM");
+  btn(20, y + 28, 104, 26, "NOTE REPEAT", nr_on, C_ACC2) ? (nr_on = !nr_on);
+  tipif(20, y + 28, 104, 26, "Hold a pad (mouse or MIDI) to retrigger at the step rate, with swing");
+  btn(130, y + 28, 104, 26, "FULL VELOCITY", full_vel, C_ACC2) ? (full_vel = !full_vel);
+  btn(240, y + 28, 104, 26, "MIDI FOLLOW", midi_sel, C_ACC2) ? (midi_sel = !midi_sel);
+  tipif(240, y + 28, 104, 26, "Incoming MIDI notes select the pad they play");
+  btn(20, y + 60, 104, 26, "SEQ > MIDI OUT", midi_out, C_ACC2) ? (midi_out = !midi_out);
+  tipif(20, y + 60, 104, 26, "Sequencer also sends MIDI notes (pad NOTE numbers) to the next FX / outputs");
+  sprintf(#lt, "MIDI CH %d", midi_ch + 1);
+  d = spin(5200, 130, y + 60, 104, 26, #lt);
+  d ? (midi_ch = clampv(midi_ch + d, 0, 15));
+  btn(240, y + 60, 104, 26, "SOFT CLIP", mclip, C_ACC2) ? (mclip = !mclip);
+  tipif(240, y + 60, 104, 26, "Gentle master soft-clipper above -2 dBFS");
+
+  y = 530;
+  col(C_PANEL2); rrect(20, y, 324, 146, 5);
+  col(PAL[PB[K_COLOR*16 + sel_pad]]); rrect(20, y, 5, 146, 2);
+  fnt(6); col(C_TXT); sprintf(#lt, "PAD %02d", sel_pad + 1); text(34, y + 8, #lt);
+  fnt(3); col(C_TXT2); note_name(PB[K_NOTE*16 + sel_pad], #lt2); sprintf(#lt, "note %s  (%d)", #lt2, PB[K_NOTE*16 + sel_pad]);
+  textr(120, y + 10, 214, 16, #lt);
+  fnt(2); col(LOADED[sel_pad] ? C_TXT : C_TXT3);
+  LOADED[sel_pad] ? fitstr(#lt, 100 + sel_pad, 300) : strcpy(#lt, strlen(100 + sel_pad) ? 100 + sel_pad : "(empty)");
+  text(34, y + 34, #lt);
+  fnt(3); col(C_TXT3); fitstr(#lt, 200 + sel_pad, 300); text(34, y + 52, #lt);
+  fmt(K_CHOKE, PB[K_CHOKE*16 + sel_pad], #lt2); sprintf(#lt, "choke %s", #lt2);
+  fmt(K_OUT, PB[K_OUT*16 + sel_pad], #lt2); strcat(#lt, "   |   "); strcat(#lt, #lt2);
+  strcat(#lt, PB[K_MODE*16 + sel_pad] ? "   |   mono" : "   |   poly");
+  col(C_TXT2); text(34, y + 72, #lt);
+  col(C_TXT3);
+  text(34, y + 98, "Keys:  1 2 3 4  /  Q W E R  /  A S D F  /  Z X C V");
+  text(34, y + 114, "Space run   Tab view   Arrows select   Ctrl-click select only");
+);
+
+function draw_wave(x, y, w, h) local(p, ld, ln_, chn, base, npx, i, a0, a1, i0, i1, st, j, mnv, mxv, v,
+                                   sx, s0n, s1n, xs, xe, mid, amp, hv, rng, pc, plen, inc, dur, tA, thold, tD,
+                                   full, rev, k, t, e, nrm, ex, ey, pex, pey, oy2)
+(
+  p = sel_pad; ld = LOADED[p]; ln_ = LEN[p]; chn = max(1, NCH[p]); base = BUF_BASE + p * SLOT;
+  pc = PAL[PB[K_COLOR*16 + p]];
+  col(C_WAVEBG); rrect(x, y, w, h, 4);
+  col(C_LINE); rect(x, y + h/2, w, 1);
+  (!ld || ln_ < 2) ? (
+    fnt(6); col(C_TXT3); textc(x, y, w, h - 24, "DROP AUDIO HERE");
+    fnt(3); textc(x, y + 22, w, h - 24, "drag files from Explorer / Media Explorer   -   or select items in REAPER and run  5am_GEN16_Send.lua");
+  ) : (
+    rng = max(wv1 - wv0, 0.00001);
+    hv = hit(x, y, w, h);
+    xs = x + (PB[K_START*16 + p] - wv0) / rng * w;
+    xe = x + (PB[K_END*16 + p] - wv0) / rng * w;
+    (hv && lclick && !ui_active) ? (
+      lclick = 0;
+      dbl ? ( wv0 = 0; wv1 = 1; ) :
+      abs(mx - xs) < 8 ? ( ui_active = 7001; ) :
+      abs(mx - xe) < 8 ? ( ui_active = 7002; ) :
+      alt ? ( ui_active = 7003; drag_x0 = mx; drag_v0 = wv0; ) :
+      ( ui_trig(p, 120); );
+    );
+    (ui_active == 7001 || ui_active == 7002) ? (
+      v = wv0 + clampv((mx - x) / w, 0, 1) * rng;
+      (snap && !shift) ? (v = zc_snap(p, v));
+      param_set(ui_active == 7001 ? K_START : K_END, p, v);
+    );
+    ui_active == 7003 ? ( v = clampv(drag_v0 - (mx - drag_x0) / w * rng, 0, 1 - rng); wv0 = v; wv1 = v + rng; );
+    (hv && wheel != 0 && !ui_active) ? (
+      shift ? (
+        v = clampv(wv0 - wheel * rng * 0.15, 0, 1 - rng); wv0 = v; wv1 = v + rng;
+      ) : (
+        a0 = wv0 + (mx - x) / w * rng;
+        rng = clampv(rng * (wheel > 0 ? 0.8 : 1.25), max(64 / ln_, 0.0002), 1);
+        wv0 = clampv(a0 - (mx - x) / w * rng, 0, 1 - rng); wv1 = wv0 + rng;
+      );
+      wheel = 0;
+    );
+    hv ? strcpy(#tip, "Wave: drag S/E markers to trim (Shift = no snap)  |  click = audition  |  wheel = zoom  |  Shift-wheel / Alt-drag = scroll  |  double-click = fit");
+
+    rng = max(wv1 - wv0, 0.00001);
+    s0n = PB[K_START*16 + p]; s1n = PB[K_END*16 + p];
+    xs = x + (s0n - wv0) / rng * w; xe = x + (s1n - wv0) / rng * w;
+
+    npx = floor(w * sc);
+    mid = oy + (y + h/2) * sc; amp = (h/2 - 6) * sc * min(NORMG[p], 8);
+    oy2 = ox + x * sc;
+    i = 0;
+    loop(npx,
+      a0 = wv0 + i / npx * rng; a1 = wv0 + (i + 1) / npx * rng;
+      i0 = floor(a0 * ln_); i1 = min(max(i0 + 1, floor(a1 * ln_)), ln_);
+      st = max(1, floor((i1 - i0) / 24));
+      mnv = 0; mxv = 0; j = i0;
+      while (j < i1) (
+        v = base[j * chn]; chn > 1 ? (v = (v + base[j * chn + 1]) * 0.5);
+        v < mnv ? (mnv = v); v > mxv ? (mxv = v);
+        j += st;
+      );
+      col((a0 >= s0n && a0 <= s1n) ? pc : C_WAVEDIM);
+      sx = oy2 + i;
+      gfx_line(sx, mid - min(mxv * amp, (h/2 - 2)*sc), sx, mid - max(mnv * amp, -(h/2 - 2)*sc) + 1, 0);
+      i += 1;
+    );
+
+    col(0x000000); gfx_a = 0.45;
+    xs > x ? rect(x, y, min(xs, x + w) - x, h);
+    xe < x + w ? ( v = max(xe, x); rect(v, y, x + w - v, h); );
+    gfx_a = 1;
+
+    plen = D_PLEN[p]; inc = max(D_INC[p], 0.0001); dur = plen / inc;
+    tA = PB[K_ATT*16 + p] * 0.001 * srate; thold = PB[K_HOLD*16 + p] * 0.001 * srate;
+    full = PB[K_DEC*16 + p] >= 9999; tD = PB[K_DEC*16 + p] * 0.001 * srate;
+    rev = PB[K_REV*16 + p];
+    col(C_YEL); gfx_a = 0.75;
+    k = 0; pex = 0; pey = 0;
+    loop(97,
+      t = k / 96 * dur;
+      e = t < tA ? t / max(tA, 1) : (t < tA + thold ? 1 : (full ? 1 : exp(-6.9078 * (t - tA - thold) / max(tD, 1))));
+      nrm = rev ? (D_S1[p] - t * inc) / ln_ : (D_S0[p] + t * inc) / ln_;
+      ex = x + (nrm - wv0) / rng * w; ey = y + h - 4 - e * (h - 12);
+      (k > 0 && ex >= x && ex <= x + w && pex >= x && pex <= x + w) ? line(pex, pey, ex, ey);
+      pex = ex; pey = ey; k += 1;
+    );
+    gfx_a = 1;
+
+    i = 0;
+    loop(NV,
+      (VA[i] && VP[i] == p) ? (
+        nrm = rev ? (D_S1[p] - VPOS[i]) / ln_ : (D_S0[p] + VPOS[i]) / ln_;
+        ex = x + (nrm - wv0) / rng * w;
+        (ex >= x && ex <= x + w) ? ( col(C_TXT); gfx_a = 0.8; rect(ex, y, 1, h); gfx_a = 1; );
+      );
+      i += 1;
+    );
+
+    (xs >= x - 1 && xs <= x + w) ? ( col(C_ACC2); rect(xs - 1, y, 2, h); rrect(xs - 1, y, 13, 14, 2); fnt(4); col(C_BG); textc(xs - 1, y, 13, 14, "S"); );
+    (xe >= x && xe <= x + w + 1) ? ( col(C_ACC); rect(xe - 1, y, 2, h); rrect(xe - 12, y + h - 14, 13, 14, 2); fnt(4); col(C_BG); textc(xe - 12, y + h - 14, 13, 14, "E"); );
+    rev ? ( fnt(4); col(C_ACC); textr(x, y + 4, w - 8, 14, "REVERSED"); );
+    rng < 0.999 ? ( fnt(3); col(C_TXT2); sprintf(#wt, "zoom x%.1f", 1 / rng); textr(x, y + h - 18, w - 20, 14, #wt); );
+
+    col(C_PANEL2); rect(x, y + h + 4, w, 6);
+    col(C_TXT3); rect(x + wv0 * w, y + h + 4, max(rng * w, 3), 6);
+    (hit(x, y + h + 2, w, 10) && lclick && !ui_active) ? ( lclick = 0; ui_active = 7004; );
+    ui_active == 7004 ? ( v = clampv((mx - x) / w - rng / 2, 0, 1 - rng); wv0 = v; wv1 = v + rng; );
+  );
+);
+
+function draw_edit() local(p, pc, ld, d, L)
+(
+  p = sel_pad; pc = PAL[PB[K_COLOR*16 + p]]; ld = LOADED[p];
+  col(pc); rrect(372, 73, 6, 20, 2);
+  fnt(6); col(C_TXT); sprintf(#et, "PAD %02d", p + 1); text(386, 72, #et);
+  fnt(2); col(ld ? C_TXT : C_TXT3);
+  ld ? fitstr(#et2, 100 + p, 330) : strcpy(#et2, strlen(100 + p) ? 100 + p : "(empty)");
+  text(462, 75, #et2);
+  ld ? (
+    fnt(3); col(C_TXT2);
+    sprintf(#et3, "%.1f kHz   |   %s   |   %.3f s", SRR[p] / 1000, NCH[p] > 1 ? "stereo" : "mono", LEN[p] / max(1, SRR[p]));
+    textr(800, 72, 300, 22, #et3);
+  );
+
+  btn(372, 100, 64, 24, "LOAD", 0, C_ACC) ? bridge_read(1, p);
+  tipif(372, 100, 64, 24, "Load what 5am_GEN16_Send.lua last sent (selected items / browsed files) into this pad onward");
+  btn(440, 100, 60, 24, "CLEAR", 0, C_ACC) ? clear_pad(p);
+  btn(504, 100, 74, 24, "REVERSE", PB[K_REV*16 + p], C_ACC) ? param_set(K_REV, p, !PB[K_REV*16 + p]);
+  btn(582, 100, 90, 24, "NORMALIZE", PB[K_NORM*16 + p], C_ACC) ? param_set(K_NORM, p, !PB[K_NORM*16 + p]);
+  btn(676, 100, 92, 24, "SNAP ZERO-X", snap, C_ACC2) ? (snap = !snap);
+  tipif(676, 100, 92, 24, "Start/End markers snap to zero crossings (avoids clicks)");
+  btn(772, 100, 50, 24, "FIT", 0, C_ACC) ? ( wv0 = 0; wv1 = 1; );
+  btn(826, 100, 78, 24, "ZOOM S-E", 0, C_ACC) ? (
+    d = (PB[K_END*16 + p] - PB[K_START*16 + p]) * 0.06;
+    wv0 = clampv(PB[K_START*16 + p] - d, 0, 1); wv1 = clampv(PB[K_END*16 + p] + d, wv0 + 0.0002, 1);
+  );
+  btn(946, 100, 72, 24, "LEARN", learn_pad == p, C_ACC2) ? ( learn_pad = learn_pad == p ? -1 : p; );
+  tipif(946, 100, 72, 24, "MIDI learn: the next incoming note becomes this pad's trigger note");
+  btn(1022, 100, 78, 24, "AUDITION", 0, C_GRN) ? ui_trig(p, 120);
+
+  draw_wave(372, 132, 728, 184);
+
+  gbox(372, 336, 248, 112, "SAMPLE");
+  pknob(K_TUNE, 403, 382, 19, C_ACC);  pknob(K_FINE, 465, 382, 19, C_ACC);
+  pknob(K_START, 527, 382, 19, C_ACC2); pknob(K_END, 589, 382, 19, C_ACC2);
+  gbox(628, 336, 248, 112, "AMP ENVELOPE");
+  pknob(K_ATT, 659, 382, 19, C_YEL);  pknob(K_HOLD, 721, 382, 19, C_YEL);
+  pknob(K_DEC, 783, 382, 19, C_YEL);  pknob(K_VSENS, 845, 382, 19, C_YEL);
+  gbox(884, 336, 216, 112, "OUTPUT");
+  pknob(K_GAIN, 920, 382, 19, C_ACC); pknob(K_PAN, 992, 382, 19, C_ACC); pknob(K_DRIVE, 1064, 382, 19, C_RED);
+
+  gbox(372, 454, 372, 112, "FILTER");
+  seg(K_FTYPE, 384, 488, 176, 26, 0, 3);
+  fnt(3); col(C_TXT3); text(386, 524, "SVF 12 dB  -  vel > cut darkens soft hits");
+  pknob(K_CUT, 600, 500, 19, C_ACC2); pknob(K_RES, 660, 500, 19, C_ACC2); pknob(K_VCUT, 718, 500, 19, C_ACC2);
+
+  gbox(752, 454, 348, 112, "VOICE & ROUTING");
+  fnt(3); col(C_TXT3);
+  text(764, 474, "TRIGGER NOTE"); text(934, 474, "CHOKE GROUP");
+  text(764, 518, "OUTPUT BUS");   text(934, 518, "VOICE MODE");
+  pspin(K_NOTE, 764, 488, 160, 24);
+  pspin(K_CHOKE, 934, 488, 156, 24);
+  tipif(934, 488, 156, 24, "Pads in the same choke group cut each other (e.g. open / closed hi-hat)");
+  pspin(K_OUT, 764, 532, 160, 24);
+  tipif(764, 532, 160, 24, "Route to an extra stereo pair: enable more track channels / FX pins to use 3-16");
+  seg(K_MODE, 934, 532, 156, 24, 0, 1);
+
+  gbox(372, 572, 728, 104, "");
+  L = RL[cur_pat*16 + p];
+  strcpy_substr(#pl, "ABCDEFGH", cur_pat, 1);
+  fnt(4); col(C_TXT3);
+  sprintf(#et, "STEPS   -   PATTERN %s   -   EDIT MODE %s", #pl, edit_mode == 0 ? "STEP" : edit_mode == 1 ? "VELOCITY" : edit_mode == 2 ? "PROBABILITY" : "RATCHET");
+  text(382, 578, #et);
+  sprintf(#et, "LEN %d", L);
+  d = spin(5300, 1014, 576, 78, 18, #et);
+  d ? (RL[cur_pat*16 + p] = clampv(L + d, 1, 32));
+  edit_cols = disp_cols();
+  d = 0;
+  loop(edit_cols, step_cell(p, d, 380 + d * 712 / edit_cols, 600, 712 / edit_cols, 68, L); d += 1; );
+);
+
+function draw_seq() local(r, s, L, x, y, cw, dc, i, hv, pc, d)
+(
+  dc = disp_cols();
+  strcpy_substr(#pl, "ABCDEFGH", cur_pat, 1);
+  fnt(6); col(C_TXT); sprintf(#sq, "PATTERN %s", #pl); text(376, 74, #sq);
+  q_pat >= 0 ? ( fnt(3); col(C_ACC2); strcpy_substr(#pl, "ABCDEFGH", q_pat, 1); sprintf(#sq, "next: %s", #pl); text(482, 79, #sq); );
+
+  i = 0;
+  loop(4,
+    x = 540 + i*60;
+    hv = hit(x, 72, 58, 24) && !ui_active;
+    col(edit_mode == i ? C_ACC2 : (hv ? C_BTNH : C_BTN)); rrect(x, 72, 58, 24, 4);
+    fnt(4); col(edit_mode == i ? C_BG : C_TXT2);
+    textc(x, 72, 58, 24, i == 0 ? "STEP" : (i == 1 ? "VELO" : (i == 2 ? "PROB" : "RATCH")));
+    (hv && lclick) ? ( lclick = 0; edit_mode = i; );
+    i += 1;
+  );
+  tipif(540, 72, 238, 24, "Edit mode: STEP click/paint  |  VELO drag height  |  PROB drag height  |  RATCH click cycles x1-x4");
+
+  btn(788, 72, 56, 24, "CLEAR", 0, C_RED) ? ( pat_clear(cur_pat); );
+  btn(848, 72, 52, 24, "COPY", 0, C_ACC) ? (
+    memcpy(CLIP_PAT, SVEL + cur_pat*512, 512); memcpy(CLIP_PAT + 512, SPROB + cur_pat*512, 512);
+    memcpy(CLIP_PAT + 1024, SRAT + cur_pat*512, 512); memcpy(CLIP_PAT + 1536, RL + cur_pat*16, 16);
+    has_clip_pat = 1; strcpy(#status, "Pattern copied"); set_status_t();
+  );
+  btn(904, 72, 56, 24, "PASTE", 0, C_ACC) ? (
+    has_clip_pat ? (
+      memcpy(SVEL + cur_pat*512, CLIP_PAT, 512); memcpy(SPROB + cur_pat*512, CLIP_PAT + 512, 512);
+      memcpy(SRAT + cur_pat*512, CLIP_PAT + 1024, 512); memcpy(RL + cur_pat*16, CLIP_PAT + 1536, 16);
+    );
+  );
+  btn(964, 72, 64, 24, "DOUBLE", 0, C_ACC) ? pat_double(cur_pat);
+  tipif(964, 72, 64, 24, "Rows of 16 steps or less are copied after themselves (16 -> 32)");
+  d = spin(5400, 1032, 72, 68, 24, "LEN ALL");
+  d ? ( i = 0; loop(16, RL[cur_pat*16 + i] = clampv(RL[cur_pat*16 + i] + d, 1, 32); i += 1; ); );
+
+  cw = 546 / dc;
+  fnt(3);
+  s = 0;
+  loop(dc,
+    col((s % 4) == 0 ? C_TXT2 : C_TXT3);
+    sprintf(#sq, "%d", s + 1);
+    ((s % 4) == 0 || cw >= 20) ? textc(494 + s * cw, 102, cw, 14, #sq);
+    s += 1;
+  );
+
+  r = 0;
+  loop(16,
+    y = SEQ_Y0 + r * SEQ_RH; L = RL[cur_pat*16 + r]; pc = PAL[PB[K_COLOR*16 + r]];
+    r == sel_pad ? ( col(C_ROWSEL); rrect(368, y - 1, 736, SEQ_RH, 4); );
+    col(pc); gfx_a = 0.25 + 0.75 * min(1, FLASH[r] + 0.3); rect(372, y + 3, 4, SEQ_RH - 8); gfx_a = 1;
+    hv = hit(380, y, 70, SEQ_RH - 2) && !ui_active;
+    fnt(3); col(LOADED[r] ? C_TXT : C_TXT3);
+    sprintf(#rn, "%02d ", r + 1); strcat(#rn, LOADED[r] ? 100 + r : "--");
+    fitstr(#rn2, #rn, 68); textl(382, y, 68, SEQ_RH - 2, #rn2);
+    hv ? (
+      strcpy(#tip, "Row: click = select & audition   right-click = pad menu   drop audio = load");
+      lclick ? ( lclick = 0; sel_pad = r; ui_trig(r, 110); );
+      rclick ? pad_menu(r);
+    );
+    btn(452, y + 4, 16, SEQ_RH - 10, "M", PB[K_MUTE*16 + r], C_RED) ? param_set(K_MUTE, r, !PB[K_MUTE*16 + r]);
+    btn(470, y + 4, 16, SEQ_RH - 10, "S", PB[K_SOLO*16 + r], C_YEL) ? param_set(K_SOLO, r, !PB[K_SOLO*16 + r]);
+    s = 0;
+    loop(dc, step_cell(r, s, 494 + s * cw, y, cw, SEQ_RH - 2, L); s += 1; );
+    sprintf(#lt, "%d", L);
+    d = spin(5000 + r, 1046, y + 2, 54, SEQ_RH - 6, #lt);
+    d ? (RL[cur_pat*16 + r] = clampv(L + d, 1, 32));
+    r += 1;
+  );
+
+  y = 596;
+  col(C_LINE); rect(372, y - 6, 728, 1);
+  fnt(2); col(C_TXT); sprintf(#sq, "ROW %02d", sel_pad + 1); text(376, y + 4, #sq);
+  fnt(3); col(C_TXT2); LOADED[sel_pad] ? fitstr(#sq, 100 + sel_pad, 150) : strcpy(#sq, "(empty pad)"); text(436, y + 6, #sq);
+  btn(620, y, 30, 24, "<", 0, C_ACC) ? row_shift(cur_pat, sel_pad, -1);
+  btn(654, y, 30, 24, ">", 0, C_ACC) ? row_shift(cur_pat, sel_pad, 1);
+  tipif(620, y, 64, 24, "Rotate the row one step");
+  btn(690, y, 54, 24, "CLEAR", 0, C_ACC) ? row_clear(cur_pat, sel_pad);
+  btn(748, y, 52, 24, "1/2", 0, C_ACC) ? row_fill(cur_pat, sel_pad, 2);
+  btn(804, y, 52, 24, "1/4", 0, C_ACC) ? row_fill(cur_pat, sel_pad, 4);
+  btn(860, y, 66, 24, "RANDOM", 0, C_ACC) ? row_random(cur_pat, sel_pad);
+  btn(930, y, 76, 24, "HUMANIZE", 0, C_ACC) ? row_humanize(cur_pat, sel_pad);
+  tipif(930, y, 76, 24, "Randomise velocities of active steps by +/-15");
+  btn(1010, y, 44, 24, "COPY", 0, C_ACC) ? (
+    i = (cur_pat*16 + sel_pad) * 32;
+    memcpy(CLIP_ROW, SVEL + i, 32); memcpy(CLIP_ROW + 32, SPROB + i, 32); memcpy(CLIP_ROW + 64, SRAT + i, 32);
+    CLIP_ROW[96] = RL[cur_pat*16 + sel_pad]; has_clip_row = 1;
+  );
+  btn(1058, y, 42, 24, "PASTE", 0, C_ACC) ? (
+    has_clip_row ? (
+      i = (cur_pat*16 + sel_pad) * 32;
+      memcpy(SVEL + i, CLIP_ROW, 32); memcpy(SPROB + i, CLIP_ROW + 32, 32); memcpy(SRAT + i, CLIP_ROW + 64, 32);
+      RL[cur_pat*16 + sel_pad] = CLIP_ROW[96];
+    );
+  );
+
+  y = 632;
+  fnt(4); col(C_TXT2); text(376, y + 6, "EUCLID");
+  sprintf(#sq, "HITS %d", euc_k);
+  d = spin(5100, 430, y, 92, 24, #sq); d ? (euc_k = clampv(euc_k + d, 1, 32));
+  sprintf(#sq, "ROTATE %d", euc_r);
+  d = spin(5101, 526, y, 92, 24, #sq); d ? (euc_r = clampv(euc_r + d, 0, 31));
+  btn(622, y, 64, 24, "APPLY", 0, C_ACC2) ? row_euclid(cur_pat, sel_pad, euc_k, euc_r);
+  tipif(430, y, 256, 24, "Spread HITS evenly over the row length (3/8 tresillo, 5/16 bossa...)");
+  fnt(3); col(C_TXT3);
+  text(700, y + 1, "click/drag paint  |  Shift-click accent  |  wheel velocity");
+  text(700, y + 14, "right-click step = velocity / probability / ratchet menu");
+);
+
+function draw_mixer() local(i, x, pc, n, nn, v, hv)
+(
+  i = 0;
+  loop(16,
+    x = 372 + i * 42;
+    pc = PAL[PB[K_COLOR*16 + i]];
+    col(i == sel_pad ? C_ROWSEL : C_PANEL2); rrect(x, 72, 38, 604, 4);
+    col(pc); gfx_a = 0.35 + 0.65 * min(1, FLASH[i]); rect(x + 3, 75, 32, 3); gfx_a = 1;
+    fnt(4); col(C_TXT); sprintf(#mt, "%02d", i + 1); textc(x, 82, 38, 14, #mt);
+    fnt(3); col(LOADED[i] ? C_TXT2 : C_TXT3);
+    LOADED[i] ? fitstr(#mt2, 100 + i, 36) : strcpy(#mt2, "--"); textc(x, 97, 38, 12, #mt2);
+    hv = hit(x, 72, 38, 40) && !ui_active;
+    hv ? (
+      LOADED[i] ? strcpy(#tip, 100 + i) : strcpy(#tip, "empty pad");
+      lclick ? ( lclick = 0; sel_pad = i; ui_trig(i, 110); );
+      rclick ? pad_menu(i);
+    );
+
+    v = PB[K_PAN*16 + i]; n = to_norm(K_PAN, v);
+    nn = mini_knob(2000 + i, x + 19, 134, 13, n, 1, pc);
+    nn == -2 ? param_set(K_PAN, i, 0) : (nn != n ? param_set(K_PAN, i, from_norm(K_PAN, nn)));
+    fmt(K_PAN, v, #mt3); fnt(3); col(C_TXT2); textc(x, 150, 38, 12, #mt3);
+
+    v = PB[K_GAIN*16 + i]; n = to_norm(K_GAIN, v);
+    nn = fader(3000 + i, x + 2, 174, 36, 340, n, PKH[i], -1, pc);
+    nn == -2 ? param_set(K_GAIN, i, 0) : (nn != n ? param_set(K_GAIN, i, from_norm(K_GAIN, nn)));
+    v <= -59.9 ? strcpy(#mt3, "-inf") : sprintf(#mt3, "%.1f", v);
+    fnt(3); col(C_TXT); textc(x, 522, 38, 14, #mt3);
+    (hit(x, 168, 38, 352) || ui_active == 3000 + i) ? (fmt(K_GAIN, v, #mt3); sprintf(#tip, "Pad %02d level %s   (drag, Shift = fine, double-click = 0 dB)", i + 1, #mt3));
+
+    btn(x + 2, 542, 16, 18, "M", PB[K_MUTE*16 + i], C_RED) ? param_set(K_MUTE, i, !PB[K_MUTE*16 + i]);
+    btn(x + 20, 542, 16, 18, "S", PB[K_SOLO*16 + i], C_YEL) ? param_set(K_SOLO, i, !PB[K_SOLO*16 + i]);
+
+    v = PB[K_OUT*16 + i];
+    v == 0 ? strcpy(#mt3, "MAIN") : sprintf(#mt3, "%d/%d", v*2 + 1, v*2 + 2);
+    hv = hit(x + 2, 566, 34, 18);
+    btn(x + 2, 566, 34, 18, #mt3, v > 0, C_ACC2) ? param_set(K_OUT, i, (v + 1) % 8);
+    (hv && rclick) ? value_menu(K_OUT, i);
+    hv ? strcpy(#tip, "Output bus (click = next, right-click = menu)");
+
+    v = PB[K_CHOKE*16 + i];
+    v == 0 ? strcpy(#mt3, "C -") : sprintf(#mt3, "C %d", v);
+    hv = hit(x + 2, 590, 34, 18);
+    btn(x + 2, 590, 34, 18, #mt3, v > 0, C_ACC) ? param_set(K_CHOKE, i, (v + 1) % 9);
+    (hv && rclick) ? value_menu(K_CHOKE, i);
+    hv ? strcpy(#tip, "Choke group (click = next, right-click = menu)");
+
+    btn(x + 2, 614, 34, 18, PB[K_MODE*16 + i] ? "MONO" : "POLY", PB[K_MODE*16 + i], C_ACC) ? param_set(K_MODE, i, !PB[K_MODE*16 + i]);
+    btn(x + 2, 638, 34, 18, "REV", PB[K_REV*16 + i], C_ACC) ? param_set(K_REV, i, !PB[K_REV*16 + i]);
+    i += 1;
+  );
+
+  x = 1046;
+  col(C_PANEL2); rrect(x, 72, 54, 604, 4);
+  col(C_ACC); rect(x + 3, 75, 48, 3);
+  fnt(4); col(C_TXT); textc(x, 82, 54, 14, "MASTER");
+  n = (slider1 + 60) / 72;
+  nn = fader(3100, x + 6, 174, 44, 340, n, mph_l, mph_r, C_GRN);
+  nn == -2 ? (nn = 60/72);
+  nn != n ? ( slider1 = floor((-60 + 72*nn) * 10 + 0.5) / 10; notify_slider(1); );
+  fnt(3); col(C_TXT); sprintf(#mt3, "%.1f", slider1); textc(x, 522, 54, 14, #mt3);
+  btn(x + 4, 542, 46, 18, "CLIP", mclip, C_ACC2) ? (mclip = !mclip);
+);
+
+function draw_footer() local(nvc, i)
+(
+  col(C_PANEL); rect(0, 690, 1120, 30);
+  col(C_LINE); rect(0, 690, 1120, 1);
+  fnt(3);
+  strlen(#tip) > 0 ? ( col(C_TXT); fitstr(#ftip, #tip, 780); textl(16, 690, 780, 30, #ftip); )
+                   : ( col(now - status_t < 6 ? C_TXT : C_TXT2); fitstr(#ftip, #status, 780); textl(16, 690, 780, 30, #ftip); );
+  nvc = 0; i = 0; loop(NV, nvc += VA[i]; i += 1; );
+  strcpy_substr(#pl, "ABCDEFGH", cur_pat, 1);
+  sprintf(#ft, "VOICES %02d/32     PAT %s     GEN-16 v3.0", nvc, #pl);
+  col(C_TXT3); textr(800, 690, 304, 30, #ft);
+);
+
+// ============================== INIT STATE ==================================
+SEQ_Y0 = 120; SEQ_RH = 29;
+#bridge_file = "5am_gen16_bridge.txt";
+
+!init_done ? (
+  init_done = 1;
+  p = 0;
+  loop(16,
+    k = 0; loop(NK, PB[k*16 + p] = pdef(k, p); k += 1; );
+    strcpy(100 + p, ""); strcpy(200 + p, ""); strcpy(400 + p, "");
+    p += 1;
+  );
+  i = 0; loop(8, pat_clear(i); i += 1; );
+  sel_pad = 0; view = 0; cur_pat = 0; midi_ch = 9; snap = 1; mclip = 1;
+  euc_k = 5; euc_r = 0; edit_mode = 0;
+);
+
+learn_pad = -1; learn_done = 0; q_pat = -1; ui_active = 0;
+last_g = -1; units = 0; int_run = 0; rec_on = 0; uq_w = 0; uq_r = 0;
+wv0 = 0; wv1 = 1; wave_pad = -1;
+p = 0; loop(16, RSKIP[p] = -1000000000; HELD[p] = 0; CURST[p] = -1; p += 1; );
+strcpy(#status, "Drop audio on a pad  -  or select items in REAPER and run 5am_GEN16_Send.lua");
+status_t = 0;
+
+@serialize
+ser_ver = 3;
+file_var(0, ser_ver);
+rd = file_avail(0) >= 0;
+file_var(0, sel_pad); file_var(0, view); file_var(0, cur_pat); file_var(0, midi_ch); file_var(0, midi_out);
+file_var(0, snap); file_var(0, full_vel); file_var(0, midi_sel); file_var(0, mclip); file_var(0, edit_mode);
+file_var(0, nr_on); file_var(0, euc_k); file_var(0, euc_r);
+nkd = NK; file_var(0, nkd);
+p = 0;
+loop(16,
+  k = 0;
+  loop(nkd, k < NK ? file_var(0, PB[k*16 + p]) : file_var(0, ser_dummy); k += 1; );
+  file_string(0, 200 + p);
+  p += 1;
+);
+r = 0;
+loop(128,
+  b = r * 32;
+  nz = 0;
+  !rd ? ( i = 0; loop(32, (SVEL[b + i] > 0 || SPROB[b + i] != 100 || SRAT[b + i] != 1) ? (nz = 1); i += 1; ); );
+  file_var(0, nz);
+  file_var(0, RL[r]);
+  nz ? (
+    i = 0;
+    loop(32,
+      pkv = SVEL[b + i] + 128 * SPROB[b + i] + 16384 * SRAT[b + i];
+      file_var(0, pkv);
+      rd ? (
+        SRAT[b + i] = floor(pkv / 16384); pkv -= SRAT[b + i] * 16384;
+        SPROB[b + i] = floor(pkv / 128); SVEL[b + i] = pkv - SPROB[b + i] * 128;
+      );
+      i += 1;
+    );
+  ) : (
+    rd ? ( i = 0; loop(32, SVEL[b + i] = 0; SPROB[b + i] = 100; SRAT[b + i] = 1; i += 1; ); );
+  );
+  r += 1;
+);
+rd ? (
+  r = 0; loop(128, RL[r] = clampv(RL[r]|0, 1, 32); r += 1; );
+  sel_pad = clampv(sel_pad|0, 0, 15); cur_pat = clampv(cur_pat|0, 0, 7); q_pat = -1;
+  p = 0;
+  loop(16,
+    strlen(200 + p) > 0 ? (
+      (!LOADED[p] || strcmp(200 + p, 400 + p) != 0) ? (
+        !load_pad(p, 200 + p) ? (
+          LOADED[p] = 0; LEN[p] = 0;
+          base_name(#lp_nm, 200 + p); sprintf(100 + p, "MISSING: %s", #lp_nm);
+        );
+      );
+    ) : (
+      LOADED[p] ? ( LOADED[p] = 0; LEN[p] = 0; strcpy(100 + p, ""); strcpy(400 + p, ""); );
+    );
+    p += 1;
+  );
+);
+
+@slider
+sl_pat = clampv(slider3|0, 0, 7);
+sl_pat != cur_pat ? (
+  ((play_state & 1) || int_run) ? ( q_pat = sl_pat; ) : ( cur_pat = sl_pat; q_pat = -1; );
+);
+
+@block
+spos = 0; mq_n = 0; mq_r = 0;
+
+// pad level / mute live in sliders (automatable)
+p = 0; ah = 0;
+loop(16,
+  PB[K_GAIN*16 + p] = slider(21 + p);
+  PB[K_MUTE*16 + p] = slider(5 + p) >= 0.5;
+  ah += HELD[p];
+  p += 1;
+);
+any_held = ah > 0;
+update_derived();
+rel_coef = exp(-6.9078 / (0.006 * srate));
+mgain = slider1 <= -59.9 ? 0 : 10 ^ (slider1 / 20);
+swing2 = 2 * clampv(slider2, 50, 75) / 100;
+spb = RATE_TAB[clampv(slider4|0, 0, 4)];
+cur_tempo = tempo > 1 ? tempo : 120;
+du = cur_tempo / 60 * spb / srate;
+step_samps = 1 / du;
+
+// ---- MIDI in: queue notes for sample-accurate triggering, pass everything through
+while (midirecv(mofs, m1, m2, m3)) (
+  mst = m1 & 0xF0;
+  (mst == 0x90 && m3 > 0) ? (
+    mq_n < 64 ? ( MQ[mq_n*3] = mofs; MQ[mq_n*3 + 1] = m2; MQ[mq_n*3 + 2] = m3; mq_n += 1; );
+  ) : (mst == 0x80 || mst == 0x90) ? (
+    mq_n < 64 ? ( MQ[mq_n*3] = mofs; MQ[mq_n*3 + 1] = m2; MQ[mq_n*3 + 2] = 0; mq_n += 1; );
+  ) : (mst == 0xB0 && (m2 == 123 || m2 == 120)) ? (
+    i = 0; loop(NV, VA[i] ? (VST[i] = 4); i += 1; );
+  );
+  midisend(mofs, m1, m2, m3);
+);
+
+// ---- transport / sequencer clock
+host_play = (play_state & 1) == 1;
+seq_run = host_play || int_run;
+host_play ? (
+  hu = beat_position * spb;
+  (!prev_host || abs(hu - units) > 0.75) ? (
+    g0 = calc_g(hu);
+    last_g = (hu - step_start(g0)) < du * 2 ? g0 - 1 : g0;
+    i = 0; loop(16, RT_N[i] = 0; RSKIP[i] = -1000000000; i += 1; );
+  );
+  units = hu;
+) : int_run ? (
+  (!prev_int || prev_host) ? ( units = 0; last_g = -1; i = 0; loop(16, RSKIP[i] = -1000000000; i += 1; ); );
+) : (nr_on && any_held) ? (
+  !prev_free ? ( units = 0; last_g = 0; );
+);
+clock_on = seq_run || (nr_on && any_held);
+prev_free = !seq_run && nr_on && any_held;
+prev_host = host_play;
+prev_int = int_run && !host_play;
+
+!seq_run ? (
+  i = 0; loop(16, CURST[i] = -1; RT_N[i] = 0; i += 1; );
+  rt_any = 0;
+);
+(mo_any && !clock_on) ? (
+  i = 0; loop(16, MO_CTR[i] > 0 ? ( midisend(0, 0x80 | midi_ch, MO_NOTE[i], 0); MO_CTR[i] = 0; ); i += 1; );
+  mo_any = 0;
+);
+
+// ---- pad hits from the UI (mouse / computer keyboard)
+while (uq_r != uq_w) (
+  live_hit(UQ[uq_r*2], UQ[uq_r*2 + 1]);
+  uq_r = (uq_r + 1) % 64;
+);
+
+// ---- per-block filter coefficients (follow cutoff knob while voices ring)
+i = 0;
+loop(NV, (VA[i] && D_FT[VP[i]] > 0) ? voice_filter(i); i += 1; );
+
+@sample
+while (mq_r < mq_n && MQ[mq_r*3] <= spos) (
+  MQ[mq_r*3 + 2] > 0 ? midi_note_on(MQ[mq_r*3 + 1], MQ[mq_r*3 + 2]) : midi_note_off(MQ[mq_r*3 + 1]);
+  mq_r += 1;
+);
+
+clock_on ? (
+  cg = calc_g(units);
+  cg > last_g ? ( last_g = cg; seq_tick(cg); );
+  units += du;
+);
+
+rt_any ? (
+  rt_cnt = 0; ri = 0;
+  loop(16,
+    RT_N[ri] > 0 ? (
+      RT_CTR[ri] -= 1;
+      RT_CTR[ri] <= 0 ? ( fire(ri, RT_V[ri] * 0.85); RT_N[ri] -= 1; RT_CTR[ri] += RT_INT[ri]; );
+      rt_cnt += 1;
+    );
+    ri += 1;
+  );
+  rt_any = rt_cnt > 0;
+);
+
+mo_any ? (
+  mo_cnt = 0; ri = 0;
+  loop(16,
+    MO_CTR[ri] > 0 ? (
+      MO_CTR[ri] -= 1;
+      MO_CTR[ri] <= 0 ? midisend(spos, 0x80 | midi_ch, MO_NOTE[ri], 0) : (mo_cnt += 1);
+    );
+    ri += 1;
+  );
+  mo_any = mo_cnt > 0;
+);
+
+ml = 0; mr = 0;
+vi = 0;
+loop(NV,
+  VA[vi] ? (
+    wp = VP[vi]; wpos = VPOS[vi]; vlen = D_PLEN[wp];
+    (LOADED[wp] && wpos < vlen) ? (
+      vip = wpos | 0; vfr = wpos - vip;
+      vb = BUF_BASE + wp * SLOT;
+      PB[K_REV*16 + wp] ? ( vi0 = D_S1[wp] - 1 - vip; vi1 = max(vi0 - 1, 0); )
+                        : ( vi0 = D_S0[wp] + vip; vi1 = min(vi0 + 1, LEN[wp] - 1); );
+      NCH[wp] == 1 ? (
+        va_ = vb[vi0]; xl = va_ + (vb[vi1] - va_) * vfr; xr = xl;
+      ) : (
+        va_ = vb[vi0*2]; xl = va_ + (vb[vi1*2] - va_) * vfr;
+        va_ = vb[vi0*2 + 1]; xr = va_ + (vb[vi1*2 + 1] - va_) * vfr;
+      );
+
+      wst = VST[vi]; ve = VENV[vi];
+      wst == 1 ? ( ve += D_AINC[wp]; ve >= 1 ? ( ve = 1; wst = 2; VT[vi] = D_HOLDS[wp]; ); ) :
+      wst == 2 ? ( VT[vi] -= 1; VT[vi] <= 0 ? (wst = 3); ) :
+      wst == 3 ? ( ve *= D_DCO[wp]; ) :
+      ( ve *= rel_coef; );
+
+      (wst >= 3 && ve < 0.00003) ? (
+        VA[vi] = 0;
+      ) : (
+        vft = D_FT[wp];
+        vft > 0 ? (
+          wk = VK[vi]; vq1 = VA1[vi]; vq2 = VA2[vi]; vq3 = VA3[vi];
+          v3 = xl - VI2L[vi]; v1 = vq1 * VI1L[vi] + vq2 * v3; v2 = VI2L[vi] + vq2 * VI1L[vi] + vq3 * v3;
+          VI1L[vi] = 2 * v1 - VI1L[vi]; VI2L[vi] = 2 * v2 - VI2L[vi];
+          xl = vft == 1 ? v2 : (vft == 2 ? xl - wk * v1 - v2 : v1 * wk);
+          v3 = xr - VI2R[vi]; v1 = vq1 * VI1R[vi] + vq2 * v3; v2 = VI2R[vi] + vq2 * VI1R[vi] + vq3 * v3;
+          VI1R[vi] = 2 * v1 - VI1R[vi]; VI2R[vi] = 2 * v2 - VI2R[vi];
+          xr = vft == 1 ? v2 : (vft == 2 ? xr - wk * v1 - v2 : v1 * wk);
+        );
+        D_DPRE[wp] > 1.001 ? (
+          xl = sat(xl * D_DPRE[wp]) * D_DCMP[wp];
+          xr = sat(xr * D_DPRE[wp]) * D_DCMP[wp];
+        );
+        vg = ve * VVG[vi];
+        vrem = vlen - wpos; vrem < 48 ? (vg *= vrem / 48);
+        ol = xl * vg * D_GL[wp]; or_ = xr * vg * D_GR[wp];
+        vbus = D_OUT[wp];
+        vbus == 0 ? ( ml += ol; mr += or_; ) : (
+          spl(vbus*2) = spl(vbus*2) + ol;
+          spl(vbus*2 + 1) = spl(vbus*2 + 1) + or_;
+        );
+        vpk = max(abs(ol), abs(or_)); vpk > PK[wp] ? (PK[wp] = vpk);
+        VENV[vi] = ve; VST[vi] = wst; VPOS[vi] = wpos + D_INC[wp];
+      );
+    ) : ( VA[vi] = 0; );
+  );
+  vi += 1;
+);
+
+ml *= mgain; mr *= mgain;
+mclip ? ( ml = softclip(ml); mr = softclip(mr); );
+abs(ml) > mpk_l ? (mpk_l = abs(ml));
+abs(mr) > mpk_r ? (mpk_r = abs(mr));
+spl0 += ml; spl1 += mr;
+spos += 1;
+
+@gfx 1120 720
+// ---------- frame setup: everything is laid out on a 1120x720 canvas and scaled
+sc = max(0.4, min(gfx_w / 1120, gfx_h / 720));
+ox = floor(max(0, (gfx_w - 1120 * sc) * 0.5));
+oy = floor(max(0, (gfx_h - 720 * sc) * 0.5));
+abs(sc - last_sc) > 0.0001 ? ( last_sc = sc; setup_fonts(); );
+
+mx = (mouse_x - ox) / sc; my = (mouse_y - oy) / sc;
+lb = mouse_cap & 1; rb = (mouse_cap & 2) > 0;
+lclick = lb && !plb; rclick = rb && !prb;
+ctrl = (mouse_cap & 4) > 0; shift = (mouse_cap & 8) > 0; alt = (mouse_cap & 16) > 0;
+wheel = mouse_wheel / 120; mouse_wheel = 0;
+now = time_precise();
+dbl = 0;
+lclick ? (
+  dbl = (now - last_click_t) < 0.32 && abs(mx - last_cx) < 5 && abs(my - last_cy) < 5;
+  last_click_t = dbl ? 0 : now; last_cx = mx; last_cy = my;
+);
+strcpy(#tip, "");
+
+// ---------- computer keyboard
+while ((kc = gfx_getchar()) > 0) (
+  kc == 32 ? ( !host_play ? (int_run = !int_run); ) :
+  kc == 9 ? ( view = (view + 1) % 3; ) :
+  kc == 'left' ? ( sel_pad = max(sel_pad - 1, 0); ) :
+  kc == 'rght' ? ( sel_pad = min(sel_pad + 1, 15); ) :
+  kc == 'up' ? ( sel_pad = min(sel_pad + 4, 15); ) :
+  kc == 'down' ? ( sel_pad = max(sel_pad - 4, 0); ) :
+  (
+    kl = (kc >= 65 && kc <= 90) ? kc + 32 : kc;
+    kp = -1; gi = 0;
+    loop(16, str_getchar("zxcvasdfqwer1234", gi) == kl ? (kp = gi); gi += 1; );
+    kp >= 0 ? ( sel_pad = kp; ui_trig(kp, 110); );
+  );
+);
+
+// ---------- drag & drop (several files fill consecutive pads)
+gfx_getdropfile(0, #drop) ? (
+  dp = pad_at(mx, my); dp < 0 ? (dp = sel_pad);
+  gi = 0; nl = 0;
+  while (dp + gi < 16 && gfx_getdropfile(gi, #drop)) ( load_new(dp + gi, #drop) ? (nl += 1); gi += 1; );
+  gfx_getdropfile(-1);
+  sel_pad = dp;
+  nl > 1 ? ( sprintf(#status, "Loaded %d samples into pads %02d-%02d", nl, dp + 1, dp + nl); set_status_t(); );
+);
+
+// ---------- bridge from 5am_GEN16_Send.lua
+now - bridge_t > 0.6 ? ( bridge_t = now; bridge_read(0, -1); );
+
+learn_done ? (
+  sprintf(#status, "Pad %02d now plays on MIDI note %d", learn_done, PB[K_NOTE*16 + learn_done - 1]);
+  set_status_t(); learn_done = 0;
+);
+
+// ---------- meters / flashes
+gi = 0;
+loop(16, PKH[gi] = max(PK[gi], PKH[gi] * 0.86); PK[gi] = 0; FLASH[gi] *= 0.82; gi += 1; );
+mph_l = max(mpk_l, mph_l * 0.86); mpk_l = 0;
+mph_r = max(mpk_r, mph_r * 0.86); mpk_r = 0;
+
+sel_pad != wave_pad ? ( wave_pad = sel_pad; wv0 = 0; wv1 = 1; );
+
+// ---------- draw
+col(C_BG); gfx_rect(0, 0, gfx_w, gfx_h);
+draw_header();
+draw_left();
+col(C_PANEL); rrect(364, 64, 744, 620, 6);
+view == 0 ? draw_edit() : (view == 1 ? draw_seq() : draw_mixer());
+draw_footer();
+
+!lb ? (
+  ui_active = 0;
+  held_ui > 0 ? ( HELD[held_ui - 1] = 0; held_ui = 0; );
+);
+plb = lb; prb = rb;
